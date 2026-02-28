@@ -20,20 +20,20 @@ bs-eval '(expt 2 10)'
 
 # ─────────────────────────────────────────────────────────────────────────────
 banner "Defining variables (exported to your shell)"
-eval "$(bs '(define x 1)')"
-eval "$(bs '(set! x (+ x 41))')"
+bs '(define x 1)'
+bs '(set! x (+ x 41))'
 echo "x = $x"
 
 # ─────────────────────────────────────────────────────────────────────────────
 banner "Functions"
-eval "$(bs '(define (factorial n)
+bs '(define (factorial n)
               (if (= n 0) 1
-                  (* n (factorial (- n 1)))))')"
+                  (* n (factorial (- n 1)))))'
 bs-eval '(factorial 10)'
 
-eval "$(bs '(define (fib n)
+bs '(define (fib n)
               (if (< n 2) n
-                  (+ (fib (- n 1)) (fib (- n 2)))))')"
+                  (+ (fib (- n 1)) (fib (- n 2)))))'
 bs-eval '(fib 20)'
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -44,11 +44,11 @@ bs-eval "(foldl + 0 '(1 2 3 4 5))"
 
 # ─────────────────────────────────────────────────────────────────────────────
 banner "Closures"
-eval "$(bs '(define make-counter
+bs '(define make-counter
               (lambda ()
                 (let ((n 0))
-                  (lambda () (set! n (+ n 1)) n))))')"
-eval "$(bs '(define counter (make-counter))')"
+                  (lambda () (set! n (+ n 1)) n))))'
+bs '(define counter (make-counter))'
 bs-eval '(counter)'
 bs-eval '(counter)'
 bs-eval '(counter)'
@@ -56,7 +56,7 @@ bs-eval '(counter)'
 # ─────────────────────────────────────────────────────────────────────────────
 banner "Lists and quasiquote"
 bs-eval "'(the quick brown fox)"
-eval "$(bs '(define color "red")')"
+bs '(define color "red")'
 bs-eval '`(roses are ,color)'
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -73,7 +73,7 @@ bs-eval '(string-length "Scheme")'
 
 # ─────────────────────────────────────────────────────────────────────────────
 banner "Vectors"
-eval "$(bs '(define v (vector 10 20 30 40 50))')"
+bs '(define v (vector 10 20 30 40 50))'
 bs-eval '(vector-ref v 2)'
 bs-eval '(vector->list v)'
 

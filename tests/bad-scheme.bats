@@ -13,12 +13,12 @@ setup() {
 }
 
 teardown() {
-    bs-reset          # clean up state file
+    bs-reset
 }
 
 # Convenience: evaluate expr and expose $result (display form) and $__bs_last
 bs_run() {
-    eval "$(bs "$1")"
+    bs "$1"
     result="$__bs_last_display"
 }
 
@@ -243,26 +243,26 @@ bs_run() {
 # 5. define / set! / variable lookup
 # ────────────────────────────────────────────────────────────────────────────
 @test "define and read variable" {
-    eval "$(bs '(define x 99)')"
+    bs '(define x 99)'
     [[ "$x" == "i:99" ]]
 }
 
 @test "define function shorthand" {
-    eval "$(bs '(define (square n) (* n n))')"
+    bs '(define (square n) (* n n))'
     bs_run '(square 7)'
     [[ "$result" == "49" ]]
 }
 
 @test "set! updates variable" {
-    eval "$(bs '(define counter 0)')"
-    eval "$(bs '(set! counter (+ counter 1))')"
-    eval "$(bs '(set! counter (+ counter 1))')"
+    bs '(define counter 0)'
+    bs '(set! counter (+ counter 1))'
+    bs '(set! counter (+ counter 1))'
     [[ "$counter" == "i:2" ]]
 }
 
 @test "define overwrites" {
-    eval "$(bs '(define v 1)')"
-    eval "$(bs '(define v 2)')"
+    bs '(define v 1)'
+    bs '(define v 2)'
     [[ "$v" == "i:2" ]]
 }
 
@@ -311,8 +311,8 @@ bs_run() {
 }
 
 @test "closure captures environment" {
-    eval "$(bs '(define make-adder (lambda (n) (lambda (x) (+ x n))))')"
-    eval "$(bs '(define add5 (make-adder 5))')"
+    bs '(define make-adder (lambda (n) (lambda (x) (+ x n))))'
+    bs '(define add5 (make-adder 5))'
     bs_run '(add5 37)'
     [[ "$result" == "42" ]]
 }
@@ -342,7 +342,7 @@ bs_run() {
 
 @test "let does not see siblings" {
     # In regular let, bindings see parent scope, not siblings
-    eval "$(bs '(define z 100)')"
+    bs '(define z 100)'
     bs_run '(let ((a 1) (b (+ z 1))) (+ a b))'
     [[ "$result" == "102" ]]
 }
@@ -617,17 +617,17 @@ bs_run() {
 # 14. I/O (display writes to stderr; captured via redirection)
 # ────────────────────────────────────────────────────────────────────────────
 @test "display writes to stderr" {
-    output="$(eval "$(bs '(display 42)')" 2>&1)"
+    output="$(bs '(display 42)' 2>&1)"
     [[ "$output" == "42" ]]
 }
 
 @test "newline writes newline to stderr" {
-    output="$(eval "$(bs '(begin (display 1) (newline) (display 2))')" 2>&1)"
+    output="$(bs '(begin (display 1) (newline) (display 2))' 2>&1)"
     [[ "$output" == $'1\n2' ]]
 }
 
 @test "write strings with quotes" {
-    output="$(eval "$(bs '(write "hello")')" 2>&1)"
+    output="$(bs '(write "hello")' 2>&1)"
     [[ "$output" == '"hello"' ]]
 }
 
@@ -653,13 +653,13 @@ bs_run() {
 # 16. Recursion
 # ────────────────────────────────────────────────────────────────────────────
 @test "factorial recursive" {
-    eval "$(bs '(define (fact n) (if (= n 0) 1 (* n (fact (- n 1)))))')"
+    bs '(define (fact n) (if (= n 0) 1 (* n (fact (- n 1)))))'
     bs_run '(fact 10)'
     [[ "$result" == "3628800" ]]
 }
 
 @test "fibonacci recursive" {
-    eval "$(bs '(define (fib n) (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2)))))')"
+    bs '(define (fib n) (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2)))))'
     bs_run '(fib 15)'
     [[ "$result" == "610" ]]
 }
@@ -671,8 +671,8 @@ bs_run() {
 }
 
 @test "mutual recursion even/odd" {
-    eval "$(bs '(define (my-even? n) (if (= n 0) #t (my-odd? (- n 1))))')"
-    eval "$(bs '(define (my-odd?  n) (if (= n 0) #f (my-even? (- n 1))))')"
+    bs '(define (my-even? n) (if (= n 0) #t (my-odd? (- n 1))))'
+    bs '(define (my-odd?  n) (if (= n 0) #f (my-even? (- n 1))))'
     bs_run '(my-even? 20)'
     [[ "$__bs_last" == "b:#t" ]]
     bs_run '(my-odd? 21)'
@@ -680,11 +680,11 @@ bs_run() {
 }
 
 @test "accumulator closure" {
-    eval "$(bs '(define make-counter
+    bs '(define make-counter
                   (lambda ()
                     (let ((n 0))
-                      (lambda () (set! n (+ n 1)) n))))')"
-    eval "$(bs '(define c (make-counter))')"
+                      (lambda () (set! n (+ n 1)) n))))'
+    bs '(define c (make-counter))'
     bs_run '(c)'; [[ "$result" == "1" ]]
     bs_run '(c)'; [[ "$result" == "2" ]]
     bs_run '(c)'; [[ "$result" == "3" ]]
@@ -717,20 +717,20 @@ bs_run() {
 # 19. Persistence across calls
 # ────────────────────────────────────────────────────────────────────────────
 @test "variable persists across bs calls" {
-    eval "$(bs '(define x 1)')"
-    eval "$(bs '(set! x (+ x 41))')"
+    bs '(define x 1)'
+    bs '(set! x (+ x 41))'
     [[ "$x" == "i:42" ]]
 }
 
 @test "closure persists across bs calls" {
-    eval "$(bs '(define adder (lambda (n) (lambda (x) (+ x n))))')"
-    eval "$(bs '(define plus7 (adder 7))')"
+    bs '(define adder (lambda (n) (lambda (x) (+ x n))))'
+    bs '(define plus7 (adder 7))'
     bs_run '(plus7 35)'
     [[ "$result" == "42" ]]
 }
 
 @test "define then use in next call" {
-    eval "$(bs '(define (double x) (* 2 x))')"
+    bs '(define (double x) (* 2 x))'
     bs_run '(double 21)'
     [[ "$result" == "42" ]]
 }
@@ -739,7 +739,7 @@ bs_run() {
 # 20. Multi-expression source
 # ────────────────────────────────────────────────────────────────────────────
 @test "multiple top-level expressions" {
-    eval "$(bs '(define a 10) (define b 32) (+ a b)')"
+    bs '(define a 10) (define b 32) (+ a b)'
     [[ "$__bs_last" == "i:42" ]]
     [[ "$a" == "i:10" ]]
     [[ "$b" == "i:32" ]]
@@ -749,9 +749,9 @@ bs_run() {
 # 21. Higher-order functions
 # ────────────────────────────────────────────────────────────────────────────
 @test "compose" {
-    eval "$(bs '(define (compose f g) (lambda (x) (f (g x))))')"
-    eval "$(bs '(define inc (lambda (x) (+ x 1)))')"
-    eval "$(bs '(define double (lambda (x) (* 2 x)))')"
+    bs '(define (compose f g) (lambda (x) (f (g x))))'
+    bs '(define inc (lambda (x) (+ x 1)))'
+    bs '(define double (lambda (x) (* 2 x)))'
     bs_run '((compose inc double) 20)'
     [[ "$result" == "41" ]]
 }
@@ -868,13 +868,13 @@ bs_run() {
 }
 
 @test "quasiquote with unquote" {
-    eval "$(bs '(define x 42)')"
+    bs '(define x 42)'
     bs_run '`(a ,x b)'
     [[ "$__bs_last_display" == "(a 42 b)" ]]
 }
 
 @test "quasiquote nested" {
-    eval "$(bs '(define y 10)')"
+    bs '(define y 10)'
     bs_run '`(1 ,(+ y 5) 3)'
     [[ "$__bs_last_display" == "(1 15 3)" ]]
 }
@@ -1001,7 +1001,7 @@ bs_run() {
 # 29. error primitive
 # ────────────────────────────────────────────────────────────────────────────
 @test "error outputs message to stderr" {
-    run bash -c 'source bad-scheme.sh; bs-reset; eval "$(bs '\''(error "oops" 42)'\'')" 2>&1'
+    run bash -c 'source bad-scheme.sh; bs-reset; bs '\''(error "oops" 42)'\'' 2>&1'
     [[ "$output" == *"oops"* ]]
 }
 
@@ -1058,8 +1058,8 @@ bs_run() {
 }
 
 @test "nested define and closure" {
-    eval "$(bs '(define (make-pair a b) (lambda (sel) (if sel a b)))')"
-    eval "$(bs '(define p (make-pair 10 20))')"
+    bs '(define (make-pair a b) (lambda (sel) (if sel a b)))'
+    bs '(define p (make-pair 10 20))'
     bs_run '(p #t)'
     [[ "$result" == "10" ]]
     bs_run '(p #f)'

@@ -12,7 +12,7 @@ endif
 
 SHELL := /bin/bash
 
-.PHONY: install uninstall check test example
+.PHONY: install uninstall check test test-em example
 
 install:
 	@echo "Detected shell: $(SHELL_TYPE) (override with SHELL_TYPE=bash|zsh)"
@@ -45,6 +45,11 @@ test: check
 	@echo ""
 	@echo "── Zsh tests ──"
 	@zsh tests/bad-scheme-zsh.zsh
+
+test-em:
+	@echo ""
+	@echo "── Scheme editor tests ──"
+	@bash tests/run_em_tests.sh
 
 example: check
 	@bash examples/demo.sh
