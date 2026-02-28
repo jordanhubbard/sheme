@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# em - Emacs-like editor powered by bad-scheme
+#
+# This is a convenience wrapper installed by 'make install-em'.
+# It locates the bad-scheme source and launches the Scheme editor.
+
+set -euo pipefail
+
+# Resolve the bad-scheme installation directory
+# The install target places this script alongside a symlink or copy
+EM_DIR="$(cd "$(dirname "$(readlink -f "$0" 2>/dev/null || echo "$0")")/.." && pwd)"
+
+if [[ ! -f "$EM_DIR/bad-scheme.sh" ]]; then
+    echo "em: cannot find bad-scheme.sh (expected at $EM_DIR/bad-scheme.sh)" >&2
+    echo "    Try reinstalling: cd <bad-scheme-dir> && make install-em" >&2
+    exit 1
+fi
+
+exec bash "$EM_DIR/examples/em.sh" "$@"

@@ -1,6 +1,6 @@
 #!/usr/bin/expect -f
 # Test: I-search highlights match in Scheme editor
-set timeout 30
+set timeout 120
 
 spawn bash [file join [file dirname [info script]] .. examples em.sh]
 

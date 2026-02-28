@@ -11,8 +11,10 @@ else
 endif
 
 SHELL := /bin/bash
+PREFIX ?= /usr/local
+SRCDIR := $(abspath .)
 
-.PHONY: install uninstall check test test-em example
+.PHONY: install install-em uninstall uninstall-em check test test-em test-all benchmark example
 
 install:
 	@echo "Detected shell: $(SHELL_TYPE) (override with SHELL_TYPE=bash|zsh)"
@@ -26,12 +28,24 @@ install:
 	fi
 	@echo "Installed. Open a new shell or: source $(RCFILE)"
 
+install-em: install
+	@echo ""
+	@echo "Installing em (Scheme-powered Emacs-like editor)..."
+	@mkdir -p "$(PREFIX)/bin"
+	@ln -sf "$(SRCDIR)/bin/em" "$(PREFIX)/bin/em"
+	@echo "Installed em -> $(PREFIX)/bin/em"
+	@echo "Run 'em [file]' to launch the editor."
+
 uninstall:
 	@if [ -f "$(RCFILE)" ]; then \
 		sed -i '' '/# bad-scheme/d; /source.*bad-scheme/d' "$(RCFILE)"; \
 		echo "Removed from $(RCFILE)"; \
 	fi
 	@echo "Uninstalled."
+
+uninstall-em:
+	@rm -f "$(PREFIX)/bin/em"
+	@echo "Removed $(PREFIX)/bin/em"
 
 check:
 	@echo "Checking syntax..."
@@ -50,6 +64,11 @@ test-em:
 	@echo ""
 	@echo "── Scheme editor tests ──"
 	@bash tests/run_em_tests.sh
+
+test-all: test test-em
+
+benchmark:
+	@bash tests/benchmark.sh
 
 example: check
 	@bash examples/demo.sh

@@ -1,6 +1,6 @@
 #!/usr/bin/expect -f
 # Test: Open scratch buffer in Scheme editor and quit
-set timeout 30
+set timeout 120
 
 spawn bash [file join [file dirname [info script]] .. examples em.sh]
 

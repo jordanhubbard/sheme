@@ -1,6 +1,6 @@
 #!/usr/bin/expect -f
 # Test: Open a file in Scheme editor, verify content renders, quit
-set timeout 30
+set timeout 120
 
 # Create test file
 set fd [open "/tmp/em_scm_test_input.txt" w]

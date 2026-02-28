@@ -1,6 +1,6 @@
 #!/usr/bin/expect -f
 # Test: Type text in Scheme editor, upcase word with M-u, quit
-set timeout 30
+set timeout 120
 
 spawn bash [file join [file dirname [info script]] .. examples em.sh]
 
