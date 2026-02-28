@@ -17,8 +17,8 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install bats
-        run: sudo apt-get update -qq && sudo apt-get install -y bats
+      - name: Install dependencies
+        run: sudo apt-get update -qq && sudo apt-get install -y bats expect
 
       - name: Syntax check (bash)
         run: bash -n bad-scheme.sh
@@ -26,16 +26,19 @@ jobs:
       - name: Run bash test suite
         run: bats tests/bad-scheme.bats
 
+      - name: Run editor expect tests
+        run: bash tests/run_em_tests.sh
+
       - name: Smoke-test interpreter (bash)
         run: |
           source bad-scheme.sh
           bs-reset
-          eval "$(bs '(define x 1)')"
-          eval "$(bs '(set! x (+ x 41))')"
+          bs '(define x 1)'
+          bs '(set! x (+ x 41))'
           echo "x=$x"
           [[ "$x" == "i:42" ]] && echo "PASS: x == i:42" || { echo "FAIL"; exit 1; }
-          eval "$(bs '(define (fact n) (if (= n 0) 1 (* n (fact (- n 1)))))')"
-          eval "$(bs '(fact 10)')"
+          bs '(define (fact n) (if (= n 0) 1 (* n (fact (- n 1)))))'
+          bs '(fact 10)'
           [[ "$__bs_last" == "i:3628800" ]] && echo "PASS: fact(10) == i:3628800" || { echo "FAIL"; exit 1; }
 
   test-zsh:
