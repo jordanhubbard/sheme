@@ -26,7 +26,6 @@ declare -gA __bs_closure_env=()      # f:<id>  -> env-id of definition site
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Environments  __bs_env["envid:varname"] = tagged-value
-#               __bs_env_parent["envid"]  = parent envid for lexical scope chain
 #               __bs_env_parent["envid"]  = parent-envid  (empty string = no parent)
 # env-id 0 is the global environment
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1202,7 +1201,6 @@ __bs_apply() {                        # proc [args...]
             printf -v __bs_ret 'i:%d' "'$_c" ;;
         'f:integer->char')
             local _n="${args[0]:2}"
-            printf -v __bs_ret 'c:\\x%x' "$_n"
             __bs_ret="c:$(printf "\\x$(printf '%x' "$_n")")" ;;
         'f:char=?') [[ "${args[0]:2}" == "${args[1]:2}" ]] && __bs_ret="b:#t" || __bs_ret="b:#f" ;;
         'f:char<?') [[ "${args[0]:2}" < "${args[1]:2}" ]] && __bs_ret="b:#t" || __bs_ret="b:#f" ;;
