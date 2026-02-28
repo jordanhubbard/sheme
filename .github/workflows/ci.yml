@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+
+jobs:
+  test:
+    name: Run bad-scheme tests
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install bats
+        run: sudo apt-get update -qq && sudo apt-get install -y bats
+
+      - name: Run test suite
+        run: bats tests/bad-scheme.bats
+
+      - name: Smoke-test interpreter
+        run: |
+          source bad-scheme.sh
+          bs-reset
+          eval "$(bs '(define x 1)')"
+          eval "$(bs '(set! x (+ x 41))')"
+          echo "x=$x"
+          [[ "$x" == "i:42" ]] && echo "PASS: x == i:42" || { echo "FAIL"; exit 1; }
+          eval "$(bs '(define (fact n) (if (= n 0) 1 (* n (fact (- n 1)))))')"
+          eval "$(bs '(fact 10)')"
+          [[ "$__bs_last" == "i:3628800" ]] && echo "PASS: fact(10) == i:3628800" || { echo "FAIL"; exit 1; }
