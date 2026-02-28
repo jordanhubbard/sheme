@@ -4,11 +4,11 @@ SHELL_TYPE ?= $(if $(findstring zsh,$(USER_SHELL)),zsh,bash)
 
 ifeq ($(SHELL_TYPE),zsh)
   RCFILE ?= $(HOME)/.zshrc
+  SCRIPT := $(abspath bad-scheme.zsh)
 else
   RCFILE ?= $(HOME)/.bashrc
+  SCRIPT := $(abspath bad-scheme.sh)
 endif
-
-SCRIPT := $(abspath bad-scheme.sh)
 
 SHELL := /bin/bash
 
@@ -35,10 +35,16 @@ uninstall:
 
 check:
 	@echo "Checking syntax..."
-	@bash -n bad-scheme.sh && echo "  bad-scheme.sh: Syntax OK"
+	@bash -n bad-scheme.sh && echo "  bad-scheme.sh:  Syntax OK"
+	@zsh -n bad-scheme.zsh && echo "  bad-scheme.zsh: Syntax OK"
 
 test: check
+	@echo ""
+	@echo "── Bash tests ──"
 	@bats tests/bad-scheme.bats
+	@echo ""
+	@echo "── Zsh tests ──"
+	@zsh tests/bad-scheme-zsh.zsh
 
 example: check
 	@bash examples/demo.sh

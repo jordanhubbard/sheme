@@ -7,8 +7,8 @@ on:
     branches: ["**"]
 
 jobs:
-  test:
-    name: Run bad-scheme tests
+  test-bash:
+    name: Bash tests
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -20,10 +20,13 @@ jobs:
       - name: Install bats
         run: sudo apt-get update -qq && sudo apt-get install -y bats
 
-      - name: Run test suite
+      - name: Syntax check (bash)
+        run: bash -n bad-scheme.sh
+
+      - name: Run bash test suite
         run: bats tests/bad-scheme.bats
 
-      - name: Smoke-test interpreter
+      - name: Smoke-test interpreter (bash)
         run: |
           source bad-scheme.sh
           bs-reset
@@ -34,3 +37,36 @@ jobs:
           eval "$(bs '(define (fact n) (if (= n 0) 1 (* n (fact (- n 1)))))')"
           eval "$(bs '(fact 10)')"
           [[ "$__bs_last" == "i:3628800" ]] && echo "PASS: fact(10) == i:3628800" || { echo "FAIL"; exit 1; }
+
+  test-zsh:
+    name: Zsh tests
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install zsh
+        run: sudo apt-get update -qq && sudo apt-get install -y zsh
+
+      - name: Syntax check (zsh)
+        run: zsh -n bad-scheme.zsh
+
+      - name: Run zsh test suite
+        run: zsh tests/bad-scheme-zsh.zsh
+
+      - name: Smoke-test interpreter (zsh)
+        run: |
+          zsh -c '
+            source bad-scheme.zsh
+            bs-reset
+            eval "$(bs "(define x 1)")"
+            eval "$(bs "(set! x (+ x 41))")"
+            echo "x=$x"
+            [[ "$x" == "i:42" ]] && echo "PASS: x == i:42" || { echo "FAIL"; exit 1; }
+            eval "$(bs "(define (fact n) (if (= n 0) 1 (* n (fact (- n 1)))))")"
+            eval "$(bs "(fact 10)")"
+            [[ "$__bs_last" == "i:3628800" ]] && echo "PASS: fact(10) == i:3628800" || { echo "FAIL"; exit 1; }
+          '
