@@ -23,12 +23,23 @@ cd bad-scheme
 # Source it in your current shell
 source bad-scheme.sh    # or bad-scheme.zsh for The Other People
 
-# Try it out
-bs '(+ 1 2 3 4 5)'
-echo $__bs_last_display    # => 15
+# bs-eval evaluates an expression and prints the result to stdout
+bs-eval '(+ 1 2 3 4 5)'               # prints: 15
+bs-eval '(string-upcase "honorable")'  # prints: HONORABLE
 
+# bs evaluates silently — use it to define things and build up state.
+# Top-level define/set! values are exported as bash globals.
 bs '(define (factorial n) (if (= n 0) 1 (* n (factorial (- n 1)))))'
-bs-eval '(factorial 10)'   # => 3628800
+bs-eval '(factorial 10)'   # prints: 3628800
+
+# After any bs or bs-eval call, the raw tagged result is in $__bs_last
+# and the display form is in $__bs_last_display
+bs '(define x 42)'
+echo "$x"                  # => i:42  (tagged: "i:" prefix means integer)
+echo "$__bs_last_display"  # => 42    (human-readable)
+
+# bs-reset wipes all interpreter state
+bs-reset
 
 # Or just run the demo
 make example
