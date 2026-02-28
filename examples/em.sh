@@ -10,12 +10,24 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
-# Source the Scheme interpreter
-source "$SCRIPT_DIR/bad-scheme.sh"
+# Source the Scheme interpreter (try installed location, then repo)
+if [[ -f "$HOME/.bs.sh" ]]; then
+    source "$HOME/.bs.sh"
+elif [[ -f "$SCRIPT_DIR/bs.sh" ]]; then
+    source "$SCRIPT_DIR/bs.sh"
+else
+    echo "em: cannot find bs.sh" >&2; exit 1
+fi
 bs-reset
 
-# ── Load the Scheme editor code ──
-_em_scm="$(cat "$SCRIPT_DIR/examples/em.scm")"
+# ── Load the Scheme editor code (try installed location, then repo) ──
+if [[ -f "$HOME/.em.scm" ]]; then
+    _em_scm="$(cat "$HOME/.em.scm")"
+elif [[ -f "$SCRIPT_DIR/examples/em.scm" ]]; then
+    _em_scm="$(cat "$SCRIPT_DIR/examples/em.scm")"
+else
+    echo "em: cannot find em.scm" >&2; exit 1
+fi
 bs "$_em_scm"
 
 # ── Terminal state ──
@@ -179,6 +191,21 @@ while true; do
 
     bs "(em-handle-key \"$_em_escaped_key\" $_em_rows $_em_cols)"
     printf '%s' "$(_em_str "$__em_render")"
+
+    # Handle eval-buffer requests (C-j / M-x eval-buffer)
+    local_eval_req="$(_em_str "${__em_eval_request:-s:}")"
+    if [[ -n "$local_eval_req" ]]; then
+        # Evaluate the buffer content as Scheme
+        local_eval_result=""
+        if bs "$local_eval_req" 2>/tmp/em_eval_err; then
+            local_eval_result="$__bs_last_display"
+        else
+            local_eval_result="Error: $(cat /tmp/em_eval_err 2>/dev/null)"
+        fi
+        local_escaped_result="$(_em_escape_for_scheme "$local_eval_result")"
+        bs "(em-eval-done \"$local_escaped_result\")"
+        printf '%s' "$(_em_str "$__em_render")"
+    fi
 
     # Handle file save requests
     local_save_req="$(_em_str "${em_save_request:-s:}")"

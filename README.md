@@ -21,7 +21,7 @@ git clone https://github.com/jordanhubbard/bad-scheme.git
 cd bad-scheme
 
 # Source it in your current shell
-source bad-scheme.sh    # or bad-scheme.zsh for The Other People
+source bs.sh    # or bs.zsh for The Other People
 
 # bs-eval evaluates an expression and prints the result to stdout
 bs-eval '(+ 1 2 3 4 5)'               # prints: 15
@@ -49,18 +49,17 @@ make example
 
 | Target | Description |
 |--------|-------------|
-| `make install` | Add `source bad-scheme.sh` to your shell rc file (auto-detects bash/zsh) |
-| `make uninstall` | Remove the source line from your rc file |
-| `make install-em` | Install bad-scheme AND the `em` editor command into `PREFIX/bin` (default: `/usr/local/bin`) |
-| `make uninstall-em` | Remove the `em` symlink |
+| `make install` | Copy `bs.sh` and `bs.zsh` to `~/` and add `source` lines to `~/.bashrc` and `~/.zshrc` |
+| `make uninstall` | Remove the copied files and `source` lines from rc files |
+| `make install-em` | Install bad-scheme AND copy `em.sh`/`em.scm` to `~/` with shell integration |
+| `make uninstall-em` | Remove the em files and `source` lines |
 | `make check` | Syntax-check both bash and zsh versions |
 | `make test` | Run the interpreter test suite (177 bash + 202 zsh tests) |
 | `make test-em` | Run the Scheme editor expect tests (5 tests) |
-| `make test-all` | Run everything: interpreter tests + editor tests |
+| `make test-r5rs` | Run the R5RS compatibility test suite (~123 tests) |
+| `make test-all` | Run everything: interpreter tests + editor tests + R5RS tests |
 | `make benchmark` | Run performance benchmarks for all language primitives |
 | `make example` | Run the feature demo script |
-
-Override the install prefix: `make install-em PREFIX=$HOME/.local`
 
 ## Running bad-emacs (em)
 
@@ -94,12 +93,14 @@ em myfile.txt
 | C-/ | Undo |
 | C-s / C-r | Incremental search forward / backward |
 | M-u / M-l / M-c | Upcase / downcase / capitalize word |
+| C-j | Evaluate buffer as Scheme (eval-buffer) |
+| M-x | Execute named command (e.g. `eval-buffer`) |
 | C-x C-s | Save file |
 | C-x C-c | Quit |
 
 ## The Totally True and Not At All Embellished History of bad-scheme
 
-It was a dark and stormy night in late 2024.  A lone programmer, hunched over a mass of tangled bash functions that had somehow metastasized into a text editor, stared at his screen and whispered the words that would change history: "What if I wrote a Scheme interpreter... *in bash*?"
+It was a dark and stormy night in late 2024.  A lone programmer, hunched over a mass of tangled bash functions that had somehow metastasized into a text editor, stared at his screen and whispered the words that would change history: "What if I wrote a Scheme interpreter... *in bash*?"  (The result would later be renamed from `bad-scheme.sh` to `bs.sh`, because brevity is the soul of wit, and also of `source` commands.)
 
 His cat, Sir Reginald von Fluffington III, looked up from the keyboard he was sleeping on and blinked once, slowly, in the way that cats do when they are judging you but wish to maintain plausible deniability.
 
@@ -123,6 +124,6 @@ Sir Reginald, reached for comment, declined to participate but was observed shor
 
 The programmer later added zsh support, because he is, as previously established, nothing if not inclusive.  The zsh version works identically, a fact which surprised absolutely everyone, including the programmer.  "I thought for sure the associative array syntax would be different," he admitted.  "Turns out zsh just... does what bash does?  But with more... *feelings* about it?"
 
-As of this writing, bad-scheme implements a reasonable subset of R5RS Scheme, passes 379 tests across both shells, and has been used in production by exactly one person, who also wrote it.  Sir Reginald continues to withhold his endorsement, citing "procedural concerns" and "insufficient tuna."
+As of this writing, bad-scheme implements a reasonable subset of R5RS Scheme, passes 502 tests across both shells (including 123 R5RS compatibility tests), and has been used in production by exactly one person, who also wrote it.  Sir Reginald continues to withhold his endorsement, citing "procedural concerns" and "insufficient tuna."
 
 The project motto remains: **"It's not about whether you *should*.  It's about whether you *can*.  And also whether your cat respects you.  (He doesn't.)"**

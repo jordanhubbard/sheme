@@ -22,17 +22,20 @@ jobs:
         run: sudo apt-get update -qq && sudo apt-get install -y bats expect
 
       - name: Syntax check (bash)
-        run: bash -n bad-scheme.sh
+        run: bash -n bs.sh
 
       - name: Run bash test suite
-        run: bats tests/bad-scheme.bats
+        run: bats tests/bs.bats
 
       - name: Run editor expect tests
         run: bash tests/run_em_tests.sh
 
+      - name: Run R5RS compatibility tests
+        run: bash tests/r5rs-tests.sh
+
       - name: Smoke-test interpreter (bash)
         run: |
-          source bad-scheme.sh
+          source bs.sh
           bs-reset
           bs '(define x 1)'
           bs '(set! x (+ x 41))'
@@ -56,15 +59,15 @@ jobs:
         run: sudo apt-get update -qq && sudo apt-get install -y zsh
 
       - name: Syntax check (zsh)
-        run: zsh -n bad-scheme.zsh
+        run: zsh -n bs.zsh
 
       - name: Run zsh test suite
-        run: zsh tests/bad-scheme-zsh.zsh
+        run: zsh tests/bs-zsh.zsh
 
       - name: Smoke-test interpreter (zsh)
         run: |
           zsh -c '
-            source bad-scheme.zsh
+            source bs.zsh
             bs-reset
             eval "$(bs "(define x 1)")"
             eval "$(bs "(set! x (+ x 41))")"

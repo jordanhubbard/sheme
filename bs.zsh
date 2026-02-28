@@ -1,5 +1,5 @@
 #!/usr/bin/env zsh
-# bad-scheme.zsh - Scheme interpreter in Zsh
+# bs.zsh - Scheme interpreter in Zsh
 # Source this file; then call:  eval "$(bs '<scheme source>')"
 #
 # Public API (only these 3 functions are defined in the caller's namespace):
@@ -115,7 +115,7 @@ bs() {
             'string->symbol'|'symbol->string'|'string=?'|'string<?'|'string>?') return 0 ;;
             'string<=?'|'string>=?'|'string-ref'|string|'make-string'|'string-copy') return 0 ;;
             'string-upcase'|'string-downcase') return 0 ;;
-            'char->integer'|'integer->char'|'char=?'|'char<?'|'char-alphabetic?'|'char-numeric?') return 0 ;;
+            'char?'|'char->integer'|'integer->char'|'char=?'|'char<?'|'char-alphabetic?'|'char-numeric?') return 0 ;;
             display|write|newline|apply|error|'read-line') return 0 ;;
             'make-vector'|vector|'vector-ref'|'vector-set!'|'vector-length'|'vector->list'|'list->vector'|'vector?') return 0 ;;
             'exact->inexact'|'inexact->exact'|exact|inexact|floor|ceiling|round|truncate) return 0 ;;

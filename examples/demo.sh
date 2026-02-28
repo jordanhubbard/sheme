@@ -7,7 +7,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-source "$SCRIPT_DIR/bad-scheme.sh"
+source "$SCRIPT_DIR/bs.sh"
 bs-reset
 
 banner() { printf '\n\033[1;36m── %s ──\033[0m\n' "$1"; }

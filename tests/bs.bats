@@ -1,12 +1,12 @@
 #!/usr/bin/env bats
-# tests/bad-scheme.bats - Test suite for bad-scheme.sh
+# tests/bs.bats - Test suite for bs.sh
 
 # ────────────────────────────────────────────────────────────────────────────
 # Setup / teardown
 # ────────────────────────────────────────────────────────────────────────────
 setup() {
     # Absolute path to the interpreter regardless of where bats is invoked from
-    INTERP="$(cd "$(dirname "$BATS_TEST_FILENAME")/.." && pwd)/bad-scheme.sh"
+    INTERP="$(cd "$(dirname "$BATS_TEST_FILENAME")/.." && pwd)/bs.sh"
     # shellcheck disable=SC1090
     source "$INTERP"
     bs-reset          # fresh heap for every test
@@ -1001,7 +1001,7 @@ bs_run() {
 # 29. error primitive
 # ────────────────────────────────────────────────────────────────────────────
 @test "error outputs message to stderr" {
-    run bash -c 'source bad-scheme.sh; bs-reset; bs '\''(error "oops" 42)'\'' 2>&1'
+    run bash -c 'source bs.sh; bs-reset; bs '\''(error "oops" 42)'\'' 2>&1'
     [[ "$output" == *"oops"* ]]
 }
 

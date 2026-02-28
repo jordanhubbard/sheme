@@ -15,8 +15,8 @@
 (define (ansi . parts) (apply string-append ESC parts))
 
 ;; ===== Editor state =====
-;; Lines stored as a list of strings
-(define em-lines '(""))
+;; Lines stored as a vector of strings for O(1) access
+(define em-lines (vector ""))
 (define em-nlines 1)
 (define em-cy 0)
 (define em-cx 0)
@@ -53,28 +53,37 @@
 (define em_running 1)
 (define em_save_request "")
 (define em_save_data "")
+(define __em_eval_request "")
+(define __em_eval_result "")
 
-;; ===== List-based line storage =====
-;; We store lines as a Scheme list for simplicity.
-;; Access is O(n) but adequate for the file sizes bad-emacs handles.
+;; ===== Vector-based line storage =====
+;; Lines stored as a vector of strings for O(1) access (vector-ref/vector-set!).
+;; Insert/remove create new vectors (O(n)) but the common case is O(1).
 
-(define (list-ref-safe lst n)
-  (if (or (< n 0) (null? lst)) ""
-      (if (= n 0) (car lst)
-          (list-ref-safe (cdr lst) (- n 1)))))
+(define (vector-ref-safe vec n)
+  (if (or (< n 0) (>= n (vector-length vec))) ""
+      (vector-ref vec n)))
 
-(define (list-set lst n val)
-  (if (= n 0) (cons val (cdr lst))
-      (cons (car lst) (list-set (cdr lst) (- n 1) val))))
+(define (vector-insert vec n val)
+  (let* ((len (vector-length vec))
+         (new-vec (make-vector (+ len 1) "")))
+    (do ((i 0 (+ i 1))) ((= i n))
+      (vector-set! new-vec i (vector-ref vec i)))
+    (vector-set! new-vec n val)
+    (do ((i n (+ i 1))) ((= i len))
+      (vector-set! new-vec (+ i 1) (vector-ref vec i)))
+    new-vec))
 
-(define (list-insert lst n val)
-  (if (= n 0) (cons val lst)
-      (cons (car lst) (list-insert (cdr lst) (- n 1) val))))
+(define (vector-remove vec n)
+  (let* ((len (vector-length vec))
+         (new-vec (make-vector (- len 1) "")))
+    (do ((i 0 (+ i 1))) ((= i n))
+      (vector-set! new-vec i (vector-ref vec i)))
+    (do ((i (+ n 1) (+ i 1))) ((= i len))
+      (vector-set! new-vec (- i 1) (vector-ref vec i)))
+    new-vec))
 
-(define (list-remove lst n)
-  (if (= n 0) (cdr lst)
-      (cons (car lst) (list-remove (cdr lst) (- n 1)))))
-
+;; list-take and list-drop are still used for undo-stack and kill-ring
 (define (list-take lst n)
   (if (or (<= n 0) (null? lst)) '()
       (cons (car lst) (list-take (cdr lst) (- n 1)))))
@@ -142,7 +151,7 @@
     (if (< em-cy 0) (set! em-cy 0) #f)
     (if (>= em-cy em-nlines) (set! em-cy (- em-nlines 1)) #f)
     (if (< em-cx 0) (set! em-cx 0) #f)
-    (let ((line-len (string-length (list-ref-safe em-lines em-cy))))
+    (let ((line-len (string-length (vector-ref-safe em-lines em-cy))))
       (if (> em-cx line-len) (set! em-cx line-len) #f))
     (if (< em-cy em-top) (set! em-top em-cy) #f)
     (if (>= em-cy (+ em-top visible))
@@ -169,35 +178,35 @@
              (let* ((y (list-ref record 1))
                     (x (list-ref record 2))
                     (ch (list-ref record 3))
-                    (line (list-ref-safe em-lines y)))
-               (set! em-lines (list-set em-lines y
-                 (string-append (substr line 0 x) ch (substr line x (string-length line)))))
+                    (line (vector-ref-safe em-lines y)))
+               (vector-set! em-lines y
+                 (string-append (substr line 0 x) ch (substr line x (string-length line))))
                (set! em-cy y)
                (set! em-cx x)))
             ((equal? type "delete_char")
              (let* ((y (list-ref record 1))
                     (x (list-ref record 2))
-                    (line (list-ref-safe em-lines y)))
-               (set! em-lines (list-set em-lines y
-                 (string-append (substr line 0 x) (substr line (+ x 1) (string-length line)))))
+                    (line (vector-ref-safe em-lines y)))
+               (vector-set! em-lines y
+                 (string-append (substr line 0 x) (substr line (+ x 1) (string-length line))))
                (set! em-cy y)
                (set! em-cx x)))
             ((equal? type "join_lines")
              (let* ((y (list-ref record 1))
                     (x (list-ref record 2))
-                    (line (list-ref-safe em-lines y)))
-               (set! em-lines (list-set em-lines y (substr line 0 x)))
-               (set! em-lines (list-insert em-lines (+ y 1) (substr line x (string-length line))))
+                    (line (vector-ref-safe em-lines y)))
+               (vector-set! em-lines y (substr line 0 x))
+               (set! em-lines (vector-insert em-lines (+ y 1) (substr line x (string-length line))))
                (set! em-nlines (+ em-nlines 1))
                (set! em-cy y)
                (set! em-cx x)))
             ((equal? type "split_line")
              (let* ((y (list-ref record 1))
                     (x (list-ref record 2))
-                    (line (list-ref-safe em-lines y))
-                    (next (list-ref-safe em-lines (+ y 1))))
-               (set! em-lines (list-set em-lines y (string-append line next)))
-               (set! em-lines (list-remove em-lines (+ y 1)))
+                    (line (vector-ref-safe em-lines y))
+                    (next (vector-ref-safe em-lines (+ y 1))))
+               (vector-set! em-lines y (string-append line next))
+               (set! em-lines (vector-remove em-lines (+ y 1)))
                (set! em-nlines (- em-nlines 1))
                (set! em-cy y)
                (set! em-cx x)))
@@ -205,7 +214,7 @@
              (let* ((y (list-ref record 1))
                     (x (list-ref record 2))
                     (old-line (list-ref record 3)))
-               (set! em-lines (list-set em-lines y old-line))
+               (vector-set! em-lines y old-line)
                (set! em-cy y)
                (set! em-cx x)))
             (#t #f)))
@@ -229,7 +238,7 @@
           (let ((i (+ em-top (- screen-row 1))))
             (emit (ansi "[" (number->string screen-row) ";1H"))
             (if (< i em-nlines)
-                (let* ((line (list-ref-safe em-lines i))
+                (let* ((line (vector-ref-safe em-lines i))
                        (display (expand-tabs line))
                        (display (if (> (string-length display) em-cols)
                                     (substr display 0 em-cols)
@@ -334,7 +343,7 @@
 
     ;; Position cursor
     (let* ((screen-cy (+ (- em-cy em-top) 1))
-           (screen-cx (+ (col-to-display (list-ref-safe em-lines em-cy) em-cx) 1)))
+           (screen-cx (+ (col-to-display (vector-ref-safe em-lines em-cy) em-cx) 1)))
       (emit (ansi "[" (number->string screen-cy) ";" (number->string screen-cx) "H")))
 
     ;; Show cursor
@@ -346,7 +355,7 @@
 ;; ===== Movement =====
 
 (define (em-forward-char)
-  (let ((line-len (string-length (list-ref-safe em-lines em-cy))))
+  (let ((line-len (string-length (vector-ref-safe em-lines em-cy))))
     (if (< em-cx line-len)
         (set! em-cx (+ em-cx 1))
         (if (< em-cy (- em-nlines 1))
@@ -361,7 +370,7 @@
       (if (> em-cy 0)
           (begin
             (set! em-cy (- em-cy 1))
-            (set! em-cx (string-length (list-ref-safe em-lines em-cy))))
+            (set! em-cx (string-length (vector-ref-safe em-lines em-cy))))
           #f))
   (set! em-goal-col -1)
   (em-ensure-visible))
@@ -371,7 +380,7 @@
       (begin
         (if (< em-goal-col 0) (set! em-goal-col em-cx) #f)
         (set! em-cy (+ em-cy 1))
-        (let ((line-len (string-length (list-ref-safe em-lines em-cy))))
+        (let ((line-len (string-length (vector-ref-safe em-lines em-cy))))
           (set! em-cx em-goal-col)
           (if (> em-cx line-len) (set! em-cx line-len) #f)))
       #f)
@@ -382,7 +391,7 @@
       (begin
         (if (< em-goal-col 0) (set! em-goal-col em-cx) #f)
         (set! em-cy (- em-cy 1))
-        (let ((line-len (string-length (list-ref-safe em-lines em-cy))))
+        (let ((line-len (string-length (vector-ref-safe em-lines em-cy))))
           (set! em-cx em-goal-col)
           (if (> em-cx line-len) (set! em-cx line-len) #f)))
       #f)
@@ -392,7 +401,7 @@
   (set! em-cx 0) (set! em-goal-col -1) (em-ensure-visible))
 
 (define (em-end-of-line)
-  (set! em-cx (string-length (list-ref-safe em-lines em-cy)))
+  (set! em-cx (string-length (vector-ref-safe em-lines em-cy)))
   (set! em-goal-col -1) (em-ensure-visible))
 
 (define (em-beginning-of-buffer)
@@ -400,7 +409,7 @@
 
 (define (em-end-of-buffer)
   (set! em-cy (- em-nlines 1))
-  (set! em-cx (string-length (list-ref-safe em-lines em-cy)))
+  (set! em-cx (string-length (vector-ref-safe em-lines em-cy)))
   (set! em-goal-col -1) (em-ensure-visible))
 
 (define (em-scroll-down)
@@ -426,53 +435,52 @@
 ;; ===== Basic editing =====
 
 (define (em-self-insert ch)
-  (let ((line (list-ref-safe em-lines em-cy)))
+  (let ((line (vector-ref-safe em-lines em-cy)))
     (em-undo-push (list "delete_char" em-cy em-cx))
-    (set! em-lines (list-set em-lines em-cy
-      (string-append (substr line 0 em-cx) ch (substr line em-cx (string-length line)))))
+    (vector-set! em-lines em-cy
+      (string-append (substr line 0 em-cx) ch (substr line em-cx (string-length line))))
     (set! em-cx (+ em-cx 1))
-    (set! em-nlines (length em-lines))
     (set! em-modified 1)
     (set! em-goal-col -1)))
 
 (define (em-newline)
-  (let* ((line (list-ref-safe em-lines em-cy))
+  (let* ((line (vector-ref-safe em-lines em-cy))
          (before (substr line 0 em-cx))
          (after (substr line em-cx (string-length line))))
     (em-undo-push (list "split_line" em-cy em-cx))
-    (set! em-lines (list-set em-lines em-cy before))
-    (set! em-lines (list-insert em-lines (+ em-cy 1) after))
+    (vector-set! em-lines em-cy before)
+    (set! em-lines (vector-insert em-lines (+ em-cy 1) after))
     (set! em-cy (+ em-cy 1))
     (set! em-cx 0)
-    (set! em-nlines (length em-lines))
+    (set! em-nlines (vector-length em-lines))
     (set! em-modified 1)
     (set! em-goal-col -1)
     (em-ensure-visible)))
 
 (define (em-open-line)
-  (let* ((line (list-ref-safe em-lines em-cy))
+  (let* ((line (vector-ref-safe em-lines em-cy))
          (before (substr line 0 em-cx))
          (after (substr line em-cx (string-length line))))
     (em-undo-push (list "split_line" em-cy em-cx))
-    (set! em-lines (list-set em-lines em-cy before))
-    (set! em-lines (list-insert em-lines (+ em-cy 1) after))
-    (set! em-nlines (length em-lines))
+    (vector-set! em-lines em-cy before)
+    (set! em-lines (vector-insert em-lines (+ em-cy 1) after))
+    (set! em-nlines (vector-length em-lines))
     (set! em-modified 1)))
 
 (define (em-delete-char)
-  (let* ((line (list-ref-safe em-lines em-cy))
+  (let* ((line (vector-ref-safe em-lines em-cy))
          (line-len (string-length line)))
     (if (< em-cx line-len)
         (begin
           (em-undo-push (list "insert_char" em-cy em-cx (substr line em-cx (+ em-cx 1))))
-          (set! em-lines (list-set em-lines em-cy
-            (string-append (substr line 0 em-cx) (substr line (+ em-cx 1) line-len))))
+          (vector-set! em-lines em-cy
+            (string-append (substr line 0 em-cx) (substr line (+ em-cx 1) line-len)))
           (set! em-modified 1))
         (if (< em-cy (- em-nlines 1))
-            (let ((next (list-ref-safe em-lines (+ em-cy 1))))
+            (let ((next (vector-ref-safe em-lines (+ em-cy 1))))
               (em-undo-push (list "join_lines" em-cy em-cx))
-              (set! em-lines (list-set em-lines em-cy (string-append line next)))
-              (set! em-lines (list-remove em-lines (+ em-cy 1)))
+              (vector-set! em-lines em-cy (string-append line next))
+              (set! em-lines (vector-remove em-lines (+ em-cy 1)))
               (set! em-nlines (- em-nlines 1))
               (set! em-modified 1))
             #f)))
@@ -484,7 +492,7 @@
       (if (> em-cy 0)
           (begin
             (set! em-cy (- em-cy 1))
-            (set! em-cx (string-length (list-ref-safe em-lines em-cy)))
+            (set! em-cx (string-length (vector-ref-safe em-lines em-cy)))
             (em-delete-char))
           #f))
   (set! em-goal-col -1)
@@ -493,20 +501,20 @@
 ;; ===== Kill / Yank =====
 
 (define (em-kill-line)
-  (let* ((line (list-ref-safe em-lines em-cy))
+  (let* ((line (vector-ref-safe em-lines em-cy))
          (line-len (string-length line)))
     (if (< em-cx line-len)
         (let ((killed (substr line em-cx line-len)))
           (em-undo-push (list "replace_line" em-cy em-cx line))
-          (set! em-lines (list-set em-lines em-cy (substr line 0 em-cx)))
+          (vector-set! em-lines em-cy (substr line 0 em-cx))
           (if (equal? em-last-cmd "C-k")
               (set! em-kill-ring (cons (string-append (car em-kill-ring) killed) (cdr em-kill-ring)))
               (set! em-kill-ring (cons killed em-kill-ring))))
         (if (< em-cy (- em-nlines 1))
-            (let ((next (list-ref-safe em-lines (+ em-cy 1))))
+            (let ((next (vector-ref-safe em-lines (+ em-cy 1))))
               (em-undo-push (list "join_lines" em-cy em-cx))
-              (set! em-lines (list-set em-lines em-cy (string-append line next)))
-              (set! em-lines (list-remove em-lines (+ em-cy 1)))
+              (vector-set! em-lines em-cy (string-append line next))
+              (set! em-lines (vector-remove em-lines (+ em-cy 1)))
               (set! em-nlines (- em-nlines 1))
               (let ((killed "\n"))
                 (if (equal? em-last-cmd "C-k")
@@ -527,37 +535,37 @@
         (set! em-mark-x em-cx)
         ;; Split text on newlines
         (let ((save-cy em-cy) (save-cx em-cx)
-              (save-line (list-ref-safe em-lines em-cy)))
+              (save-line (vector-ref-safe em-lines em-cy)))
           ;; Simple case: no newlines
           (if (not (em-string-contains text "\n"))
-              (let ((line (list-ref-safe em-lines em-cy)))
+              (let ((line (vector-ref-safe em-lines em-cy)))
                 (em-undo-push (list "replace_line" save-cy save-cx save-line))
-                (set! em-lines (list-set em-lines em-cy
-                  (string-append (substr line 0 em-cx) text (substr line em-cx (string-length line)))))
+                (vector-set! em-lines em-cy
+                  (string-append (substr line 0 em-cx) text (substr line em-cx (string-length line))))
                 (set! em-cx (+ em-cx (string-length text))))
               ;; Multi-line yank
               (let* ((yank-lines (em-string-split text "\n"))
                      (nparts (length yank-lines))
-                     (line (list-ref-safe em-lines em-cy))
+                     (line (vector-ref-safe em-lines em-cy))
                      (before (substr line 0 em-cx))
                      (after (substr line em-cx (string-length line)))
                      (first-part (car yank-lines))
-                     (last-part (list-ref-safe yank-lines (- nparts 1))))
+                     (last-part (list-ref yank-lines (- nparts 1))))
                 (em-undo-push (list "replace_line" save-cy save-cx save-line))
-                (set! em-lines (list-set em-lines em-cy (string-append before first-part)))
+                (vector-set! em-lines em-cy (string-append before first-part))
                 (let loop ((i 1) (ylines (cdr yank-lines)))
                   (if (null? ylines) #f
                       (if (null? (cdr ylines))
                           ;; Last part
                           (begin
-                            (set! em-lines (list-insert em-lines (+ em-cy i)
+                            (set! em-lines (vector-insert em-lines (+ em-cy i)
                               (string-append (car ylines) after)))
                             (set! em-cy (+ em-cy i))
                             (set! em-cx (string-length (car ylines))))
                           (begin
-                            (set! em-lines (list-insert em-lines (+ em-cy i) (car ylines)))
+                            (set! em-lines (vector-insert em-lines (+ em-cy i) (car ylines)))
                             (loop (+ i 1) (cdr ylines))))))
-                (set! em-nlines (length em-lines))))
+                (set! em-nlines (vector-length em-lines))))
           (set! em-modified 1)
           (set! em-goal-col -1)
           (em-ensure-visible)))))
@@ -633,11 +641,11 @@
 
 (define (em-extract-region sy sx ey ex)
   (if (= sy ey)
-      (substr (list-ref-safe em-lines sy) sx ex)
+      (substr (vector-ref-safe em-lines sy) sx ex)
       (let loop ((i sy) (parts '()))
         (if (> i ey)
             (apply string-append (reverse parts))
-            (let* ((line (list-ref-safe em-lines i))
+            (let* ((line (vector-ref-safe em-lines i))
                    (part (cond
                            ((= i sy) (substr line sx (string-length line)))
                            ((= i ey) (substr line 0 ex))
@@ -647,29 +655,29 @@
                   (loop (+ i 1) (cons part parts))))))))
 
 (define (em-delete-region sy sx ey ex)
-  (let* ((first-line (list-ref-safe em-lines sy))
-         (last-line (list-ref-safe em-lines ey))
+  (let* ((first-line (vector-ref-safe em-lines sy))
+         (last-line (vector-ref-safe em-lines ey))
          (new-line (string-append (substr first-line 0 sx)
                                   (substr last-line ex (string-length last-line)))))
     ;; Remove lines from ey down to sy+1, then set sy
     (let loop ((i ey))
       (if (<= i sy) #f
-          (begin (set! em-lines (list-remove em-lines i))
+          (begin (set! em-lines (vector-remove em-lines i))
                  (loop (- i 1)))))
-    (set! em-lines (list-set em-lines sy new-line))
-    (set! em-nlines (length em-lines))))
+    (vector-set! em-lines sy new-line)
+    (set! em-nlines (vector-length em-lines))))
 
 ;; ===== Word operations =====
 
 (define (em-forward-word)
-  (let* ((line (list-ref-safe em-lines em-cy))
+  (let* ((line (vector-ref-safe em-lines em-cy))
          (len (string-length line)))
     ;; Skip non-word chars
     (let loop ()
       (if (>= em-cx len)
           (if (< em-cy (- em-nlines 1))
               (begin (set! em-cy (+ em-cy 1)) (set! em-cx 0)
-                     (set! line (list-ref-safe em-lines em-cy))
+                     (set! line (vector-ref-safe em-lines em-cy))
                      (set! len (string-length line))
                      (loop))
               #f)
@@ -677,7 +685,7 @@
               (begin (set! em-cx (+ em-cx 1)) (loop))
               #f)))
     ;; Skip word chars
-    (set! line (list-ref-safe em-lines em-cy))
+    (set! line (vector-ref-safe em-lines em-cy))
     (set! len (string-length line))
     (let loop ()
       (if (< em-cx len)
@@ -689,14 +697,14 @@
   (em-ensure-visible))
 
 (define (em-backward-word)
-  (let* ((line (list-ref-safe em-lines em-cy))
+  (let* ((line (vector-ref-safe em-lines em-cy))
          (len (string-length line)))
     ;; Skip non-word chars backward
     (let loop ()
       (if (<= em-cx 0)
           (if (> em-cy 0)
               (begin (set! em-cy (- em-cy 1))
-                     (set! line (list-ref-safe em-lines em-cy))
+                     (set! line (vector-ref-safe em-lines em-cy))
                      (set! len (string-length line))
                      (set! em-cx len)
                      (loop))
@@ -705,7 +713,7 @@
               (begin (set! em-cx (- em-cx 1)) (loop))
               #f)))
     ;; Skip word chars backward
-    (set! line (list-ref-safe em-lines em-cy))
+    (set! line (vector-ref-safe em-lines em-cy))
     (let loop ()
       (if (> em-cx 0)
           (if (char-word? (string-ref line (- em-cx 1)))
@@ -728,7 +736,7 @@
 ;; ===== Case conversion =====
 
 (define (em-upcase-word)
-  (let* ((line (list-ref-safe em-lines em-cy))
+  (let* ((line (vector-ref-safe em-lines em-cy))
          (len (string-length line))
          (cx em-cx))
     (if (>= cx len) #f
@@ -754,13 +762,13 @@
                       (loop))
                     #f)
                 #f))
-          (set! em-lines (list-set em-lines em-cy line))
+          (vector-set! em-lines em-cy line)
           (set! em-cx cx)
           (set! em-modified 1)
           (set! em-goal-col -1)))))
 
 (define (em-downcase-word)
-  (let* ((line (list-ref-safe em-lines em-cy))
+  (let* ((line (vector-ref-safe em-lines em-cy))
          (len (string-length line))
          (cx em-cx))
     (if (>= cx len) #f
@@ -784,13 +792,13 @@
                       (loop))
                     #f)
                 #f))
-          (set! em-lines (list-set em-lines em-cy line))
+          (vector-set! em-lines em-cy line)
           (set! em-cx cx)
           (set! em-modified 1)
           (set! em-goal-col -1)))))
 
 (define (em-capitalize-word)
-  (let* ((line (list-ref-safe em-lines em-cy))
+  (let* ((line (vector-ref-safe em-lines em-cy))
          (len (string-length line))
          (cx em-cx))
     (if (>= cx len) #f
@@ -824,13 +832,13 @@
                       (loop))
                     #f)
                 #f))
-          (set! em-lines (list-set em-lines em-cy line))
+          (vector-set! em-lines em-cy line)
           (set! em-cx cx)
           (set! em-modified 1)
           (set! em-goal-col -1)))))
 
 (define (em-transpose-chars)
-  (let* ((line (list-ref-safe em-lines em-cy))
+  (let* ((line (vector-ref-safe em-lines em-cy))
          (len (string-length line)))
     (if (>= len 2)
         (let* ((cx (if (>= em-cx len) (- len 1) em-cx))
@@ -838,8 +846,8 @@
                (ch1 (substr line (- cx 1) cx))
                (ch2 (substr line cx (+ cx 1))))
           (em-undo-push (list "replace_line" em-cy em-cx line))
-          (set! em-lines (list-set em-lines em-cy
-            (string-append (substr line 0 (- cx 1)) ch2 ch1 (substr line (+ cx 1) len))))
+          (vector-set! em-lines em-cy
+            (string-append (substr line 0 (- cx 1)) ch2 ch1 (substr line (+ cx 1) len)))
           (set! em-cx (min (+ cx 1) len))
           (set! em-modified 1)
           (set! em-goal-col -1))
@@ -868,7 +876,7 @@
             ;; Forward search from current position
             (let loop ((y em-cy) (start-x em-cx))
               (if (or found (>= y em-nlines)) #f
-                  (let* ((line (list-ref-safe em-lines y))
+                  (let* ((line (vector-ref-safe em-lines y))
                          (pos (em-string-find line em-isearch-str start-x)))
                     (if (>= pos 0)
                         (begin
@@ -882,7 +890,7 @@
             ;; Backward search
             (let loop ((y em-cy) (start-x (- em-cx 1)))
               (if (or found (< y 0)) #f
-                  (let* ((line (list-ref-safe em-lines y))
+                  (let* ((line (vector-ref-safe em-lines y))
                          (pos (em-string-rfind line em-isearch-str start-x)))
                     (if (>= pos 0)
                         (begin
@@ -989,6 +997,10 @@
           (if (equal? result "yes")
               (set! em_running 0)
               (set! em-message "Cancelled")))
+         ((equal? callback "mx-command")
+          (cond
+            ((equal? result "eval-buffer") (em-eval-buffer))
+            (#t (set! em-message (string-append "[No match] " result)))))
          (#t (set! em-message "")))))
     ((equal? key "BACKSPACE")
      (if (> (string-length em-mb-input) 0)
@@ -1006,8 +1018,8 @@
         (apply string-append (reverse parts))
         (loop (+ i 1)
               (cons (if (> i 0)
-                        (string-append "\n" (list-ref-safe em-lines i))
-                        (list-ref-safe em-lines i))
+                        (string-append "\n" (vector-ref-safe em-lines i))
+                        (vector-ref-safe em-lines i))
                     parts)))))
 
 (define (em-save-done)
@@ -1029,18 +1041,32 @@
       (em-minibuffer-start "Modified buffer not saved; exit anyway? (yes or no) " "quit-confirm")
       (set! em_running 0)))
 
+(define (em-eval-buffer)
+  ;; Signal em.sh to evaluate the buffer content as Scheme
+  (set! __em_eval_request (em-build-save-data))
+  (set! em-message "Evaluating buffer..."))
+
+(define (em-eval-done result)
+  ;; Called by em.sh after evaluation completes
+  (set! __em_eval_request "")
+  (set! em-message (string-append "Eval: " result))
+  (set! em-msg-persist 1)
+  (em-render))
+
 ;; ===== Load content =====
 (define (em-load-content lines-str)
   (if (equal? lines-str "")
-      (begin (set! em-lines '("")) (set! em-nlines 1))
+      (begin (set! em-lines (vector "")) (set! em-nlines 1))
       (begin
-        (set! em-lines (em-string-split lines-str "\n"))
-        (set! em-nlines (length em-lines))
+        (set! em-lines (list->vector (em-string-split lines-str "\n")))
+        (set! em-nlines (vector-length em-lines))
         ;; Remove trailing empty if file ended with newline
         (if (and (> em-nlines 1)
-                 (equal? (list-ref-safe em-lines (- em-nlines 1)) ""))
-            (begin
-              (set! em-lines (list-take em-lines (- em-nlines 1)))
+                 (equal? (vector-ref-safe em-lines (- em-nlines 1)) ""))
+            (let ((new-vec (make-vector (- em-nlines 1) "")))
+              (do ((i 0 (+ i 1))) ((= i (- em-nlines 1)))
+                (vector-set! new-vec i (vector-ref em-lines i)))
+              (set! em-lines new-vec)
               (set! em-nlines (- em-nlines 1)))
             #f)))
   (set! em-cy 0) (set! em-cx 0) (set! em-top 0)
@@ -1083,7 +1109,8 @@
     ((equal? key "C-s")  (em-isearch-start 1))
     ((equal? key "C-r")  (em-isearch-start -1))
     ((equal? key "C-o")  (em-open-line))
-    ((or (equal? key "C-m") (equal? key "C-j"))    (em-newline))
+    ((equal? key "C-m")  (em-newline))
+    ((equal? key "C-j")  (em-eval-buffer))
     ((equal? key "C-t")  (em-transpose-chars))
     ((equal? key "C-_")  (em-undo))
     ;; Word operations
@@ -1095,6 +1122,9 @@
     ((equal? key "M-u")  (em-upcase-word))
     ((equal? key "M-l")  (em-downcase-word))
     ((equal? key "M-c")  (em-capitalize-word))
+    ;; M-x extended commands
+    ((equal? key "M-x")
+     (em-minibuffer-start "M-x " "mx-command"))
     ;; Self-insert
     ((and (> (string-length key) 5) (equal? (substr key 0 5) "SELF:"))
      (em-self-insert (substr key 5 (string-length key))))
@@ -1111,7 +1141,7 @@
     ((or (equal? key "h") (equal? key "SELF:h"))
      (set! em-mark-y 0) (set! em-mark-x 0)
      (set! em-cy (- em-nlines 1))
-     (set! em-cx (string-length (list-ref-safe em-lines (- em-nlines 1))))
+     (set! em-cx (string-length (vector-ref-safe em-lines (- em-nlines 1))))
      (set! em-goal-col -1) (em-ensure-visible)
      (set! em-message "Mark set"))
     ((equal? key "C-x")
@@ -1138,7 +1168,7 @@
 (define (em-init rows cols)
   (set! em-rows rows)
   (set! em-cols cols)
-  (set! em-lines '(""))
+  (set! em-lines (vector ""))
   (set! em-nlines 1)
   (set! em-cy 0) (set! em-cx 0) (set! em-top 0)
   (set! em-modified 0)

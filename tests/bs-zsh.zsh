@@ -1,13 +1,13 @@
 #!/usr/bin/env zsh
-# tests/bad-scheme-zsh.zsh - Test suite for bad-scheme.zsh
-# Run: zsh tests/bad-scheme-zsh.zsh
+# tests/bs-zsh.zsh - Test suite for bs.zsh
+# Run: zsh tests/bs-zsh.zsh
 
 emulate -L zsh
 setopt KSH_ARRAYS
 
 # ── Test harness ──────────────────────────────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-source "$SCRIPT_DIR/bad-scheme.zsh"
+source "$SCRIPT_DIR/bs.zsh"
 
 _pass=0 _fail=0 _total=0
 

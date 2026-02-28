@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# bad-scheme.sh - Scheme interpreter in Bash
+# bs.sh - Scheme interpreter in Bash
 # Source this file; then call:  bs '<scheme source>'
 #
 # Public API:
@@ -89,7 +89,7 @@ __bs_is_builtin() {
         'string->symbol'|'symbol->string'|'string=?'|'string<?'|'string>?') return 0 ;;
         'string<=?'|'string>=?'|'string-ref'|string|'make-string'|'string-copy') return 0 ;;
         'string-upcase'|'string-downcase') return 0 ;;
-        'char->integer'|'integer->char'|'char=?'|'char<?'|'char-alphabetic?'|'char-numeric?') return 0 ;;
+        'char?'|'char->integer'|'integer->char'|'char=?'|'char<?'|'char-alphabetic?'|'char-numeric?') return 0 ;;
         display|write|newline|apply|error|'read-line') return 0 ;;
         'make-vector'|vector|'vector-ref'|'vector-set!'|'vector-length'|'vector->list'|'list->vector'|'vector?') return 0 ;;
         'exact->inexact'|'inexact->exact'|exact|inexact|floor|ceiling|round|truncate) return 0 ;;
