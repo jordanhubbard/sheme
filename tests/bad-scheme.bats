@@ -19,8 +19,7 @@ teardown() {
 # Convenience: evaluate expr and expose $result (display form) and $__bs_last
 bs_run() {
     eval "$(bs "$1")"
-    __bs_display "$__bs_last"
-    result="$__bs_ret"
+    result="$__bs_last_display"
 }
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -330,7 +329,7 @@ bs_run() {
 
 @test "dotted rest args" {
     bs_run '((lambda (x . rest) (cons x rest)) 1 2 3)'
-    __bs_display "$__bs_last"; [[ "$__bs_ret" == "(1 2 3)" ]]
+    [[ "$__bs_last_display" == "(1 2 3)" ]]
 }
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -491,7 +490,7 @@ bs_run() {
 
 @test "list" {
     bs_run '(list 1 2 3)'
-    __bs_display "$__bs_last"; [[ "$__bs_ret" == "(1 2 3)" ]]
+    [[ "$__bs_last_display" == "(1 2 3)" ]]
 }
 
 @test "length" {
@@ -501,17 +500,17 @@ bs_run() {
 
 @test "append two lists" {
     bs_run "(append '(1 2) '(3 4))"
-    __bs_display "$__bs_last"; [[ "$__bs_ret" == "(1 2 3 4)" ]]
+    [[ "$__bs_last_display" == "(1 2 3 4)" ]]
 }
 
 @test "append three lists" {
     bs_run "(append '(1) '(2) '(3))"
-    __bs_display "$__bs_last"; [[ "$__bs_ret" == "(1 2 3)" ]]
+    [[ "$__bs_last_display" == "(1 2 3)" ]]
 }
 
 @test "reverse" {
     bs_run "(reverse '(1 2 3))"
-    __bs_display "$__bs_last"; [[ "$__bs_ret" == "(3 2 1)" ]]
+    [[ "$__bs_last_display" == "(3 2 1)" ]]
 }
 
 @test "list-ref" {
@@ -521,12 +520,12 @@ bs_run() {
 
 @test "list-tail" {
     bs_run "(list-tail '(a b c d) 2)"
-    __bs_display "$__bs_last"; [[ "$__bs_ret" == "(c d)" ]]
+    [[ "$__bs_last_display" == "(c d)" ]]
 }
 
 @test "map squares" {
     bs_run '(map (lambda (x) (* x x)) (list 1 2 3 4 5))'
-    __bs_display "$__bs_last"; [[ "$__bs_ret" == "(1 4 9 16 25)" ]]
+    [[ "$__bs_last_display" == "(1 4 9 16 25)" ]]
 }
 
 @test "for-each" {
@@ -536,17 +535,17 @@ bs_run() {
 
 @test "filter odd" {
     bs_run '(filter odd? (list 1 2 3 4 5))'
-    __bs_display "$__bs_last"; [[ "$__bs_ret" == "(1 3 5)" ]]
+    [[ "$__bs_last_display" == "(1 3 5)" ]]
 }
 
 @test "assoc" {
     bs_run "(assoc 'b '((a 1) (b 2) (c 3)))"
-    __bs_display "$__bs_last"; [[ "$__bs_ret" == "(b 2)" ]]
+    [[ "$__bs_last_display" == "(b 2)" ]]
 }
 
 @test "member" {
     bs_run "(member 3 '(1 2 3 4))"
-    __bs_display "$__bs_last"; [[ "$__bs_ret" == "(3 4)" ]]
+    [[ "$__bs_last_display" == "(3 4)" ]]
 }
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -642,12 +641,12 @@ bs_run() {
 
 @test "quote list" {
     bs_run "'(1 2 3)"
-    __bs_display "$__bs_last"; [[ "$__bs_ret" == "(1 2 3)" ]]
+    [[ "$__bs_last_display" == "(1 2 3)" ]]
 }
 
 @test "quote nested" {
     bs_run "'(a (b c) d)"
-    __bs_display "$__bs_last"; [[ "$__bs_ret" == "(a (b c) d)" ]]
+    [[ "$__bs_last_display" == "(a (b c) d)" ]]
 }
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -701,7 +700,7 @@ bs_run() {
 
 @test "apply with leading args" {
     bs_run "(apply list 1 2 '(3 4))"
-    __bs_display "$__bs_last"; [[ "$__bs_ret" == "(1 2 3 4)" ]]
+    [[ "$__bs_last_display" == "(1 2 3 4)" ]]
 }
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -760,4 +759,329 @@ bs_run() {
 @test "fold-left sum" {
     bs_run "(foldl (lambda (x acc) (+ x acc)) 0 '(1 2 3 4 5))"
     [[ "$result" == "15" ]]
+}
+
+# ────────────────────────────────────────────────────────────────────────────
+# 22. Vector operations
+# ────────────────────────────────────────────────────────────────────────────
+@test "make-vector and vector-ref" {
+    bs_run '(let ((v (make-vector 3 0))) (vector-ref v 1))'
+    [[ "$result" == "0" ]]
+}
+
+@test "make-vector with fill" {
+    bs_run '(let ((v (make-vector 3 42))) (vector-ref v 2))'
+    [[ "$result" == "42" ]]
+}
+
+@test "vector constructor" {
+    bs_run '(let ((v (vector 10 20 30))) (vector-ref v 1))'
+    [[ "$result" == "20" ]]
+}
+
+@test "vector-set! and read back" {
+    bs_run '(let ((v (make-vector 3 0)))
+              (vector-set! v 1 99)
+              (vector-ref v 1))'
+    [[ "$result" == "99" ]]
+}
+
+@test "vector-length" {
+    bs_run '(vector-length (vector 1 2 3 4 5))'
+    [[ "$result" == "5" ]]
+}
+
+@test "vector->list" {
+    bs_run '(vector->list (vector 1 2 3))'
+    [[ "$__bs_last_display" == "(1 2 3)" ]]
+}
+
+@test "list->vector round-trip" {
+    bs_run "(let ((v (list->vector '(10 20 30)))) (vector-ref v 2))"
+    [[ "$result" == "30" ]]
+}
+
+@test "vector?" {
+    bs_run '(vector? (vector 1 2))'
+    [[ "$__bs_last" == "b:#t" ]]
+    bs_run '(vector? 42)'
+    [[ "$__bs_last" == "b:#f" ]]
+}
+
+# ────────────────────────────────────────────────────────────────────────────
+# 23. Character operations
+# ────────────────────────────────────────────────────────────────────────────
+@test "char literal" {
+    bs_run '#\a'
+    [[ "$__bs_last" == "c:a" ]]
+}
+
+@test "char space literal" {
+    bs_run '#\space'
+    [[ "$__bs_last" == "c: " ]]
+}
+
+@test "char->integer" {
+    bs_run '(char->integer #\A)'
+    [[ "$result" == "65" ]]
+}
+
+@test "integer->char" {
+    bs_run '(integer->char 65)'
+    [[ "$__bs_last" == "c:A" ]]
+}
+
+@test "char=?" {
+    bs_run '(char=? #\a #\a)'
+    [[ "$__bs_last" == "b:#t" ]]
+    bs_run '(char=? #\a #\b)'
+    [[ "$__bs_last" == "b:#f" ]]
+}
+
+@test "char<?" {
+    bs_run '(char<? #\a #\b)'
+    [[ "$__bs_last" == "b:#t" ]]
+    bs_run '(char<? #\b #\a)'
+    [[ "$__bs_last" == "b:#f" ]]
+}
+
+@test "char-alphabetic?" {
+    bs_run '(char-alphabetic? #\a)'
+    [[ "$__bs_last" == "b:#t" ]]
+    bs_run '(char-alphabetic? #\1)'
+    [[ "$__bs_last" == "b:#f" ]]
+}
+
+@test "char-numeric?" {
+    bs_run '(char-numeric? #\5)'
+    [[ "$__bs_last" == "b:#t" ]]
+    bs_run '(char-numeric? #\x)'
+    [[ "$__bs_last" == "b:#f" ]]
+}
+
+# ────────────────────────────────────────────────────────────────────────────
+# 24. Quasiquote
+# ────────────────────────────────────────────────────────────────────────────
+@test "quasiquote without unquote" {
+    bs_run '`(1 2 3)'
+    [[ "$__bs_last_display" == "(1 2 3)" ]]
+}
+
+@test "quasiquote with unquote" {
+    eval "$(bs '(define x 42)')"
+    bs_run '`(a ,x b)'
+    [[ "$__bs_last_display" == "(a 42 b)" ]]
+}
+
+@test "quasiquote nested" {
+    eval "$(bs '(define y 10)')"
+    bs_run '`(1 ,(+ y 5) 3)'
+    [[ "$__bs_last_display" == "(1 15 3)" ]]
+}
+
+# ────────────────────────────────────────────────────────────────────────────
+# 25. Additional list operations
+# ────────────────────────────────────────────────────────────────────────────
+@test "set-car!" {
+    bs_run '(let ((p (cons 1 2))) (set-car! p 99) (car p))'
+    [[ "$result" == "99" ]]
+}
+
+@test "set-cdr!" {
+    bs_run '(let ((p (cons 1 2))) (set-cdr! p 99) (cdr p))'
+    [[ "$result" == "99" ]]
+}
+
+@test "list? proper list" {
+    bs_run "(list? '(1 2 3))"
+    [[ "$__bs_last" == "b:#t" ]]
+}
+
+@test "list? dotted pair" {
+    bs_run '(list? (cons 1 2))'
+    [[ "$__bs_last" == "b:#f" ]]
+}
+
+@test "list? empty list" {
+    bs_run "(list? '())"
+    [[ "$__bs_last" == "b:#t" ]]
+}
+
+@test "fold-right" {
+    bs_run "(foldr cons '() '(1 2 3))"
+    [[ "$__bs_last_display" == "(1 2 3)" ]]
+}
+
+# ────────────────────────────────────────────────────────────────────────────
+# 26. Additional string operations
+# ────────────────────────────────────────────────────────────────────────────
+@test "string-ref" {
+    bs_run '(string-ref "hello" 1)'
+    [[ "$__bs_last" == "c:e" ]]
+}
+
+@test "string>?" {
+    bs_run '(string>? "b" "a")'
+    [[ "$__bs_last" == "b:#t" ]]
+    bs_run '(string>? "a" "b")'
+    [[ "$__bs_last" == "b:#f" ]]
+}
+
+@test "string<=?" {
+    bs_run '(string<=? "a" "b")'
+    [[ "$__bs_last" == "b:#t" ]]
+    bs_run '(string<=? "a" "a")'
+    [[ "$__bs_last" == "b:#t" ]]
+}
+
+@test "string>=?" {
+    bs_run '(string>=? "b" "a")'
+    [[ "$__bs_last" == "b:#t" ]]
+    bs_run '(string>=? "b" "b")'
+    [[ "$__bs_last" == "b:#t" ]]
+}
+
+@test "make-string" {
+    bs_run '(make-string 5 #\x)'
+    [[ "$__bs_last" == "s:xxxxx" ]]
+}
+
+@test "string-copy" {
+    bs_run '(string-copy "hello")'
+    [[ "$__bs_last" == "s:hello" ]]
+}
+
+@test "string constructor from chars" {
+    bs_run '(string #\h #\i)'
+    [[ "$__bs_last" == "s:hi" ]]
+}
+
+# ────────────────────────────────────────────────────────────────────────────
+# 27. Additional arithmetic
+# ────────────────────────────────────────────────────────────────────────────
+@test "lcm" {
+    bs_run '(lcm 4 6)'
+    [[ "$result" == "12" ]]
+}
+
+@test "exact->inexact identity" {
+    bs_run '(exact->inexact 42)'
+    [[ "$result" == "42" ]]
+}
+
+@test "floor identity" {
+    bs_run '(floor 7)'
+    [[ "$result" == "7" ]]
+}
+
+@test "ceiling identity" {
+    bs_run '(ceiling 7)'
+    [[ "$result" == "7" ]]
+}
+
+@test "round identity" {
+    bs_run '(round 7)'
+    [[ "$result" == "7" ]]
+}
+
+@test "truncate identity" {
+    bs_run '(truncate 7)'
+    [[ "$result" == "7" ]]
+}
+
+# ────────────────────────────────────────────────────────────────────────────
+# 28. letrec*
+# ────────────────────────────────────────────────────────────────────────────
+@test "letrec* basic" {
+    bs_run '(letrec* ((a 1) (b (+ a 1))) (+ a b))'
+    [[ "$result" == "3" ]]
+}
+
+# ────────────────────────────────────────────────────────────────────────────
+# 29. error primitive
+# ────────────────────────────────────────────────────────────────────────────
+@test "error outputs message to stderr" {
+    run bash -c 'source bad-scheme.sh; bs-reset; eval "$(bs '\''(error "oops" 42)'\'')" 2>&1'
+    [[ "$output" == *"oops"* ]]
+}
+
+# ────────────────────────────────────────────────────────────────────────────
+# 30. do loop (additional)
+# ────────────────────────────────────────────────────────────────────────────
+@test "do loop vector fill" {
+    bs_run '(let ((v (make-vector 5 0)))
+              (do ((i 0 (+ i 1)))
+                  ((= i 5) v)
+                (vector-set! v i (* i i)))
+              (vector->list v))'
+    [[ "$__bs_last_display" == "(0 1 4 9 16)" ]]
+}
+
+# ────────────────────────────────────────────────────────────────────────────
+# 31. Edge cases
+# ────────────────────────────────────────────────────────────────────────────
+@test "deeply nested arithmetic" {
+    bs_run '(+ (+ (+ 1 2) (+ 3 4)) (+ (+ 5 6) (+ 7 8)))'
+    [[ "$result" == "36" ]]
+}
+
+@test "lambda in let binding" {
+    bs_run '(let ((f (lambda (x) (* x 2)))) (f 21))'
+    [[ "$result" == "42" ]]
+}
+
+@test "empty begin" {
+    bs_run '(begin)'
+    [[ "$__bs_last" == "n:()" ]]
+}
+
+@test "boolean as condition (non-false is truthy)" {
+    bs_run '(if 0 "yes" "no")'
+    [[ "$result" == "yes" ]]
+}
+
+@test "chained comparisons" {
+    bs_run '(< 1 2 3 4 5)'
+    [[ "$__bs_last" == "b:#t" ]]
+    bs_run '(< 1 2 2 4 5)'
+    [[ "$__bs_last" == "b:#f" ]]
+}
+
+@test "map with lambda" {
+    bs_run '(map (lambda (x) (+ x 10)) (list 1 2 3))'
+    [[ "$__bs_last_display" == "(11 12 13)" ]]
+}
+
+@test "filter with lambda" {
+    bs_run '(filter (lambda (x) (> x 3)) (list 1 2 3 4 5))'
+    [[ "$__bs_last_display" == "(4 5)" ]]
+}
+
+@test "nested define and closure" {
+    eval "$(bs '(define (make-pair a b) (lambda (sel) (if sel a b)))')"
+    eval "$(bs '(define p (make-pair 10 20))')"
+    bs_run '(p #t)'
+    [[ "$result" == "10" ]]
+    bs_run '(p #f)'
+    [[ "$result" == "20" ]]
+}
+
+@test "append empty lists" {
+    bs_run "(append '() '() '())"
+    [[ "$__bs_last" == "n:()" ]]
+}
+
+@test "reverse empty list" {
+    bs_run "(reverse '())"
+    [[ "$__bs_last" == "n:()" ]]
+}
+
+@test "length empty list" {
+    bs_run "(length '())"
+    [[ "$result" == "0" ]]
+}
+
+@test "cond => syntax" {
+    bs_run "(cond ((assoc 'b '((a 1) (b 2) (c 3))) => cdr))"
+    [[ "$__bs_last_display" == "(2)" ]]
 }
