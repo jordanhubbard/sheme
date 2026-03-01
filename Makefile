@@ -1,7 +1,8 @@
 SHELL := /bin/bash
 SRCDIR := $(abspath .)
+BUMP ?= patch
 
-.PHONY: install install-em uninstall uninstall-em check test test-io test-em test-r5rs test-all benchmark example
+.PHONY: install install-em uninstall uninstall-em check test test-io test-em test-r5rs test-all benchmark example release
 
 install:
 	@echo "Installing bad-scheme to home directory..."
@@ -88,3 +89,6 @@ benchmark:
 
 example: check
 	@bash examples/demo.sh
+
+release:
+	@bash scripts/release.sh $(BUMP)

@@ -61,6 +61,9 @@ make example
 | `make test-all` | Run everything: interpreter + I/O + editor + R5RS tests |
 | `make benchmark` | Run performance benchmarks for all language primitives |
 | `make example` | Run the feature demo script |
+| `make release` | Generate CHANGELOG, run tests, tag, and create GitHub release (default: patch bump) |
+| `make release BUMP=minor` | Same, but bump minor version |
+| `make release BUMP=major` | Same, but bump major version |
 
 ## Running bad-emacs (em)
 
