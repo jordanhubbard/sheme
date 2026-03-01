@@ -161,3 +161,17 @@ sheme now has terminal I/O, file I/O, and runtime eval.  This means you can writ
 **A Music Tracker** — Use `write-stdout` to render a tracker-style grid interface.  Compose sequences of shell commands that produce sound (`printf '\a'` for the purists, `afplay` or `aplay` for the pragmatists).  Save compositions as S-expressions.  Perform live by editing patterns in real time.  Your DAW is bash.  Your synthesizer is `/dev/audio`.  Your audience has left.
 
 **A Conference Talk Slide Deck** — Write a presentation tool in Scheme.  Each slide is an S-expression.  Render with ANSI art.  Support transitions (implemented as recursive functions that redraw the screen).  Give your talk about sheme *using* sheme.  If the live demo crashes, it's not a bug, it's *performance art*.
+
+## Addendum: I Got Bored and Built One
+
+Look, the list above was meant as inspiration.  Aspirational.  A gentle nudge toward the horizon.
+
+Then I got bored.
+
+The "TODO App / Personal Wiki" entry caught my eye specifically because it seemed like a reasonable thing to actually build — file I/O, list processing, maybe a daemon.  Fine.  Straightforward.  And then one thing led to another, and what started as a weekend sketch turned into something with a full event-driven synchronization model, two-armed tasks (a *human* arm that notifies you and a *shell* arm that runs a command), inotifywait/fswatch integration so the daemon wakes up instantly instead of polling, and a Scheme function that computes the exact number of seconds until the next due task so the sleep is precise.
+
+It is, to be clear, a TODO app implemented as a Scheme interpreter embedded in bash, where the task list is stored as Scheme source that gets eval'd back at startup, and the daemon receives SIGUSR1 to interrupt its `read -t` sleep whenever the file changes.  This is either an elegant demonstration of sheme's capabilities or a cry for help.  Possibly both.
+
+Sir Reginald has reviewed it.  He knocked it off the desk.  I choose to interpret this as approval.
+
+The implementation lives in `examples/todo.sh`.  All the examples — including a REPL, a classic-algorithms showcase, and a CSP-style producer/consumer demo — are documented in [`examples/README.md`](examples/README.md).
