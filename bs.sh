@@ -91,6 +91,8 @@ __bs_is_builtin() {
         'string-upcase'|'string-downcase') return 0 ;;
         'char?'|'char->integer'|'integer->char'|'char=?'|'char<?'|'char-alphabetic?'|'char-numeric?') return 0 ;;
         display|write|newline|apply|error|'read-line') return 0 ;;
+        'read-byte'|'read-byte-timeout'|'write-stdout'|'terminal-size') return 0 ;;
+        'terminal-raw!'|'terminal-restore!'|'file-read'|'file-write'|'eval-string') return 0 ;;
         'make-vector'|vector|'vector-ref'|'vector-set!'|'vector-length'|'vector->list'|'list->vector'|'vector?') return 0 ;;
         'exact->inexact'|'inexact->exact'|exact|inexact|floor|ceiling|round|truncate) return 0 ;;
         'call-with-current-continuation'|'call/cc') return 0 ;;
@@ -103,6 +105,7 @@ __bs_is_builtin() {
 
 # ── Error helper ──────────────────────────────────────────────────────
 __bs_error() {
+    __bs_last_error="$*"
     printf 'bad-scheme: %s\n' "$*" >&2
     __bs_ret="n:()"
 }
@@ -1208,6 +1211,96 @@ __bs_apply() {                        # proc [args...]
             IFS= read -r __bs_tmp_readline
             __bs_ret="s:${__bs_tmp_readline}" ;;
 
+        # ── Terminal I/O (bash-only) ─────────────────────────────────
+        'f:read-byte')
+            local _ch
+            IFS= read -rsn1 -d '' _ch
+            if [[ $? -ne 0 && -z "$_ch" ]]; then
+                __bs_ret="b:#f"
+            elif [[ -z "$_ch" ]]; then
+                __bs_ret="i:0"
+            else
+                local _ord
+                printf -v _ord '%d' "'$_ch" 2>/dev/null || _ord=0
+                __bs_ret="i:$_ord"
+            fi ;;
+        'f:read-byte-timeout')
+            local _secs="${args[0]:2}" _ch
+            IFS= read -rsn1 -d '' -t "$_secs" _ch
+            if [[ $? -ne 0 && -z "$_ch" ]]; then
+                __bs_ret="b:#f"
+            elif [[ -z "$_ch" ]]; then
+                __bs_ret="i:0"
+            else
+                local _ord
+                printf -v _ord '%d' "'$_ch" 2>/dev/null || _ord=0
+                __bs_ret="i:$_ord"
+            fi ;;
+        'f:write-stdout')
+            printf '%s' "${args[0]:2}"
+            __bs_ret="n:()" ;;
+        'f:terminal-size')
+            local _rows _cols
+            _rows=$(tput lines 2>/dev/null) || _rows=0
+            _cols=$(tput cols 2>/dev/null) || _cols=0
+            if (( _rows <= 0 || _cols <= 0 )); then
+                local _sz
+                _sz=$(stty size 2>/dev/null) || _sz="0 0"
+                (( _rows <= 0 )) && _rows="${_sz%% *}"
+                (( _cols <= 0 )) && _cols="${_sz##* }"
+            fi
+            (( _rows <= 0 )) && _rows=24
+            (( _cols <= 0 )) && _cols=80
+            __bs_cons "i:$_rows" "i:$_cols" ;;
+        'f:terminal-raw!')
+            __bs_stty_saved=$(stty -g 2>/dev/null)
+            stty raw -echo -isig -ixon -ixoff -icrnl intr undef quit undef susp undef lnext undef 2>/dev/null
+            __bs_ret="n:()" ;;
+        'f:terminal-restore!')
+            if [[ -n "$__bs_stty_saved" ]]; then
+                stty "$__bs_stty_saved" 2>/dev/null || stty sane 2>/dev/null
+                __bs_stty_saved=""
+            fi
+            __bs_ret="n:()" ;;
+        'f:file-read')
+            local _path="${args[0]:2}" _content
+            if [[ -f "$_path" ]] && _content=$(cat "$_path" 2>/dev/null); then
+                __bs_ret="s:$_content"
+            else
+                __bs_ret="b:#f"
+            fi ;;
+        'f:file-write')
+            local _path="${args[0]:2}" _content="${args[1]:2}"
+            if { printf '%s\n' "$_content" > "$_path"; } 2>/dev/null; then
+                __bs_ret="b:#t"
+            else
+                __bs_ret="b:#f"
+            fi ;;
+        'f:eval-string')
+            local _src="${args[0]:2}"
+            local -a _saved_tokens=("${__bs_tokens[@]}")
+            local _saved_tpos="$__bs_tpos"
+            __bs_last_error=""
+            __bs_tokenize "$_src"
+            __bs_tpos=0
+            __bs_ret="n:()"
+            local _eval_ok=1
+            while (( __bs_tpos < ${#__bs_tokens[@]} )); do
+                if ! __bs_parse_expr; then _eval_ok=0; break; fi
+                if ! __bs_eval "$__bs_ret" "0"; then _eval_ok=0; break; fi
+            done
+            local _result_val="$__bs_ret"
+            __bs_tokens=("${_saved_tokens[@]}")
+            __bs_tpos="$_saved_tpos"
+            if (( _eval_ok )); then
+                __bs_display "$_result_val"
+                local _disp="$__bs_ret"
+                __bs_cons "b:#t" "s:$_disp"
+            else
+                local _err="${__bs_last_error:-unknown error}"
+                __bs_cons "b:#f" "s:$_err"
+            fi ;;
+
         # ── Vector ────────────────────────────────────────────────────
         'f:make-vector')
             local _id="v:${__bs_heap_next}"
@@ -1362,6 +1455,8 @@ declare -gA __bs_closure_params=() __bs_closure_body=() __bs_closure_env=()
 declare -gA __bs_env=() __bs_env_parent=()
 declare -g __bs_heap_next=0 __bs_env_next=1
 declare -g __bs_last="" __bs_last_display="" __bs_ret=""
+declare -g __bs_last_error=""
+declare -g __bs_stty_saved=""
 declare -ga __bs_tokens=()
 declare -g __bs_tpos=0
 
@@ -1399,6 +1494,8 @@ bs-reset() {
     __bs_env=() __bs_env_parent=()
     __bs_heap_next=0 __bs_env_next=1
     __bs_last="" __bs_last_display="" __bs_ret=""
+    __bs_last_error=""
+    # Note: __bs_stty_saved is NOT reset (must survive for safety-net traps)
     __bs_tokens=() __bs_tpos=0
 }
 

@@ -1,14 +1,14 @@
 ;; em.scm - A bad emacs clone in Scheme (runs on bad-scheme)
 ;;
-;; This is the editor logic. It is loaded by the bash wrapper (em.sh)
-;; which handles terminal I/O, key reading, and file operations.
+;; Standalone editor — all I/O handled via bad-scheme builtins.
+;; The bash launcher (em.sh) just sources bs.sh, loads this file,
+;; and calls (em-main "filename").
 ;;
-;; Public API (called by em.sh):
+;; Public API:
+;;   (em-main filename)          - launch the editor
 ;;   (em-init rows cols)         - initialize editor state
 ;;   (em-handle-key key rows cols) - process one keystroke
 ;;   (em-load-content lines-str) - load file content (newline-separated)
-;;   (em-get-save-data)          - get buffer content for saving
-;;   (em-save-done)              - acknowledge save completed
 
 ;; ===== ANSI helpers =====
 (define ESC (string (integer->char 27)))
@@ -48,13 +48,8 @@
 (define em-mb-prompt "")
 (define em-mb-input "")
 (define em-mb-callback "")
-;; Exported variables (underscore names — hyphens prevent bash export)
-(define __em_render "")
-(define em_running 1)
-(define em_save_request "")
-(define em_save_data "")
-(define __em_eval_request "")
-(define __em_eval_result "")
+;; Running state
+(define em-running #t)
 
 ;; ===== Vector-based line storage =====
 ;; Lines stored as a vector of strings for O(1) access (vector-ref/vector-set!).
@@ -349,8 +344,8 @@
     ;; Show cursor
     (emit (ansi "[?25h"))
 
-    ;; Join all parts into single render string
-    (set! __em_render (apply string-append (reverse parts)))))
+    ;; Write render output directly to terminal
+    (write-stdout (apply string-append (reverse parts)))))
 
 ;; ===== Movement =====
 
@@ -991,11 +986,14 @@
          ((equal? callback "save-as")
           (set! em-filename result)
           (set! em-bufname result)
-          (set! em_save_request result)
-          (set! em_save_data (em-build-save-data)))
+          (if (file-write result (em-build-save-data))
+              (begin
+                (set! em-modified 0)
+                (set! em-message (string-append "Wrote " (number->string em-nlines) " lines to " result)))
+              (set! em-message "Error writing file")))
          ((equal? callback "quit-confirm")
           (if (equal? result "yes")
-              (set! em_running 0)
+              (set! em-running #f)
               (set! em-message "Cancelled")))
          ((equal? callback "mx-command")
           (cond
@@ -1022,36 +1020,29 @@
                         (vector-ref-safe em-lines i))
                     parts)))))
 
-(define (em-save-done)
-  (set! em-modified 0)
-  (set! em-message (string-append "Wrote " (number->string em-nlines) " lines to " em-filename))
-  (set! em_save_request "")
-  (set! em_save_data "")
-  (em-render))
-
 (define (em-do-save)
   (if (equal? em-filename "")
       (em-minibuffer-start "Write file: " "save-as")
-      (begin
-        (set! em_save_request em-filename)
-        (set! em_save_data (em-build-save-data)))))
+      (if (file-write em-filename (em-build-save-data))
+          (begin
+            (set! em-modified 0)
+            (set! em-message (string-append "Wrote " (number->string em-nlines) " lines to " em-filename)))
+          (set! em-message "Error writing file"))))
 
 (define (em-do-quit)
   (if (and (= em-modified 1) (not (equal? em-bufname "*scratch*")))
       (em-minibuffer-start "Modified buffer not saved; exit anyway? (yes or no) " "quit-confirm")
-      (set! em_running 0)))
+      (set! em-running #f)))
 
 (define (em-eval-buffer)
-  ;; Signal em.sh to evaluate the buffer content as Scheme
-  (set! __em_eval_request (em-build-save-data))
-  (set! em-message "Evaluating buffer..."))
-
-(define (em-eval-done result)
-  ;; Called by em.sh after evaluation completes
-  (set! __em_eval_request "")
-  (set! em-message (string-append "Eval: " result))
-  (set! em-msg-persist 1)
-  (em-render))
+  (let ((result (eval-string (em-build-save-data))))
+    (if (car result)
+        (begin
+          (set! em-message (string-append "Eval: " (cdr result)))
+          (set! em-msg-persist 1))
+        (begin
+          (set! em-message (string-append "Eval error: " (cdr result)))
+          (set! em-msg-persist 1)))))
 
 ;; ===== Load content =====
 (define (em-load-content lines-str)
@@ -1071,6 +1062,16 @@
             #f)))
   (set! em-cy 0) (set! em-cx 0) (set! em-top 0)
   (set! em-modified 0) (set! em-undo-stack '()))
+
+(define (em-load-file filename)
+  (let ((content (file-read filename)))
+    (if content
+        (begin
+          (set! em-filename filename)
+          (set! em-bufname filename)
+          (em-load-content content)
+          #t)
+        #f)))
 
 ;; ===== Dispatch =====
 
@@ -1174,11 +1175,9 @@
   (set! em-modified 0)
   (set! em-message "em: bad emacs (C-x C-c to quit, C-h b for help)")
   (set! em-mode "normal")
-  (set! em_running 1)
+  (set! em-running #t)
   (set! em-kill-ring '())
   (set! em-undo-stack '())
-  (set! em_save_request "")
-  (set! em_save_data "")
   (em-render))
 
 (define (em-handle-key key rows cols)
@@ -1195,5 +1194,113 @@
   (set! em-last-cmd key)
   (em-render))
 
-(define (em-get-save-data)
-  em_save_data)
+;; ===== Key reading (uses read-byte / read-byte-timeout builtins) =====
+
+(define em-abc "abcdefghijklmnopqrstuvwxyz")
+
+(define (em-read-key)
+  ;; Read one byte, blocking
+  (let ((b (read-byte)))
+    (if (not b)
+        ;; EOF — retry once (bash edge case on terminal setup)
+        (let ((b2 (read-byte)))
+          (if (not b2)
+              "QUIT"
+              (em-read-key-byte b2)))
+        (em-read-key-byte b))))
+
+(define (em-read-key-byte byte)
+  (cond
+    ((= byte 0) "C-SPC")                              ;; NUL
+    ((= byte 27) (em-read-escape-seq))                 ;; ESC
+    ((and (>= byte 1) (<= byte 26))                    ;; Ctrl+letter
+     (string-append "C-" (string (string-ref em-abc (- byte 1)))))
+    ((or (= byte 127) (= byte 8)) "BACKSPACE")        ;; DEL or BS
+    (#t (string-append "SELF:" (string (integer->char byte))))))
+
+(define (em-read-escape-seq)
+  (let ((b2 (read-byte-timeout "0.05")))
+    (if (not b2)
+        "ESC"                                          ;; bare ESC
+        (cond
+          ((= b2 91) (em-read-csi))                    ;; [ → CSI
+          ((= b2 79) (em-read-ss3))                    ;; O → SS3
+          ((or (= b2 127) (= b2 8)) "M-DEL")          ;; Meta+DEL
+          (#t (string-append "M-" (string (integer->char b2))))))))
+
+(define (em-read-csi)
+  (let ((b3 (read-byte-timeout "0.05")))
+    (if (not b3)
+        "UNKNOWN"
+        (cond
+          ((= b3 65) "UP")     ((= b3 66) "DOWN")
+          ((= b3 67) "RIGHT")  ((= b3 68) "LEFT")
+          ((= b3 72) "HOME")   ((= b3 70) "END")
+          ((and (>= b3 48) (<= b3 57))                ;; digit → CSI number
+           (em-read-csi-num (string (integer->char b3))))
+          (#t "UNKNOWN")))))
+
+(define (em-read-csi-num seq)
+  ;; Accumulate digits until ~ or letter
+  (let ((b (read-byte-timeout "0.05")))
+    (if (not b)
+        "UNKNOWN"
+        (cond
+          ((= b 126)                                   ;; ~
+           (let ((full (string-append seq "~")))
+             (cond
+               ((equal? full "3~") "DEL")
+               ((equal? full "5~") "PGUP")
+               ((equal? full "6~") "PGDN")
+               ((equal? full "2~") "INS")
+               ((equal? full "1~") "HOME")
+               ((equal? full "4~") "END")
+               (#t "UNKNOWN"))))
+          ((or (and (>= b 65) (<= b 90))              ;; A-Z
+               (and (>= b 97) (<= b 122)))            ;; a-z
+           "UNKNOWN")
+          (#t (em-read-csi-num (string-append seq (string (integer->char b)))))))))
+
+(define (em-read-ss3)
+  (let ((b3 (read-byte-timeout "0.05")))
+    (if (not b3)
+        "UNKNOWN"
+        (cond
+          ((= b3 65) "UP")     ((= b3 66) "DOWN")
+          ((= b3 67) "RIGHT")  ((= b3 68) "LEFT")
+          ((= b3 72) "HOME")   ((= b3 70) "END")
+          (#t "UNKNOWN")))))
+
+;; ===== Main entry point =====
+
+(define (em-main filename)
+  ;; Enter raw mode and alternate screen
+  (terminal-raw!)
+  (write-stdout (string-append ESC "[?1049h" ESC "[?25h"))
+  ;; Initialize editor
+  (let ((size (terminal-size)))
+    (em-init (car size) (cdr size)))
+  ;; Load file if provided
+  (if (not (equal? filename ""))
+      (if (em-load-file filename)
+          #t
+          (begin
+            (set! em-filename filename)
+            (set! em-bufname filename)
+            (set! em-message (string-append "(New file) " filename))))
+      #f)
+  (em-render)
+  ;; Main loop — poll terminal-size each keystroke (replaces WINCH trap)
+  (let loop ()
+    (if em-running
+        (let* ((size (terminal-size))
+               (key (em-read-key)))
+          (if (equal? key "QUIT")
+              #f
+              (begin
+                (em-handle-key key (car size) (cdr size))
+                (loop))))
+        #f))
+  ;; Cleanup: restore terminal
+  (write-stdout (string-append ESC "[0m" ESC "[?25h" ESC "[?1049l"))
+  (terminal-restore!))

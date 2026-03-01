@@ -1,7 +1,7 @@
 SHELL := /bin/bash
 SRCDIR := $(abspath .)
 
-.PHONY: install install-em uninstall uninstall-em check test test-em test-r5rs test-all benchmark example
+.PHONY: install install-em uninstall uninstall-em check test test-io test-em test-r5rs test-all benchmark example
 
 install:
 	@echo "Installing bad-scheme to home directory..."
@@ -28,19 +28,19 @@ install:
 
 install-em: install
 	@echo ""
-	@echo "Installing em (Scheme-powered Emacs-like editor)..."
+	@echo "Installing em (Scheme-powered Emacs-like editor, bash only)..."
 	@cp "$(SRCDIR)/examples/em.sh" "$(HOME)/.em.sh"
 	@cp "$(SRCDIR)/examples/em.scm" "$(HOME)/.em.scm"
 	@echo "Installed ~/.em.sh and ~/.em.scm"
 	@if ! grep -q 'source.*\.em\.sh' "$(HOME)/.bashrc" 2>/dev/null; then \
 		echo '' >> "$(HOME)/.bashrc"; \
-		echo '# em - Scheme-powered Emacs-like editor' >> "$(HOME)/.bashrc"; \
+		echo '# em - Scheme-powered Emacs-like editor (bash only)' >> "$(HOME)/.bashrc"; \
 		echo 'source "$(HOME)/.em.sh"' >> "$(HOME)/.bashrc"; \
 		echo "Added source line to ~/.bashrc"; \
 	else \
 		echo "~/.bashrc already sources ~/.em.sh"; \
 	fi
-	@echo "Run 'em [file]' to launch the editor."
+	@echo "Run 'em [file]' to launch the editor (bash only; zsh version coming soon)."
 
 uninstall:
 	@rm -f "$(HOME)/.bs.sh" "$(HOME)/.bs.zsh"
@@ -50,8 +50,8 @@ uninstall:
 
 uninstall-em:
 	@rm -f "$(HOME)/.em.sh" "$(HOME)/.em.scm"
-	@[ -f "$(HOME)/.bashrc" ] && sed -i '' '/# em - Scheme/d; /source.*\.em\.sh/d' "$(HOME)/.bashrc" || true
-	@echo "Removed ~/.em.sh and ~/.em.scm"
+	@[ -f "$(HOME)/.bashrc" ] && sed -i '' '/# em - Scheme-powered/d; /source.*\.em\.sh/d' "$(HOME)/.bashrc" || true
+	@echo "Uninstalled Scheme-powered em."
 
 check:
 	@echo "Checking syntax..."
@@ -66,6 +66,11 @@ test: check
 	@echo "── Zsh tests ──"
 	@zsh tests/bs-zsh.zsh
 
+test-io:
+	@echo ""
+	@echo "── I/O builtin tests (bash only) ──"
+	@bash tests/io-tests.sh
+
 test-em:
 	@echo ""
 	@echo "── Scheme editor tests ──"
@@ -76,7 +81,7 @@ test-r5rs:
 	@echo "── R5RS compatibility tests ──"
 	@bash tests/r5rs-tests.sh
 
-test-all: test test-em test-r5rs
+test-all: test test-io test-em test-r5rs
 
 benchmark:
 	@bash tests/benchmark.sh
