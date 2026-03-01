@@ -1,5 +1,10 @@
 # Changelog
 
+> **Note**: The Emacs-like editor (`em.scm` / `em.scm.sh`) that was originally
+> developed as part of sheme has been spun out to its own project:
+> [shemacs](https://github.com/jordanhubbard/shemacs).
+> sheme is now a pure Scheme interpreter for shell programmers.
+
 ## v1.0.1 — 2026-02-28
 
 - Add string->list and list->string builtins (5d8ef36)

@@ -51,94 +51,22 @@ make example
 |--------|-------------|
 | `make install` | Copy `bs.sh` and `bs.zsh` to `~/` and add `source` lines to `~/.bashrc` and `~/.zshrc` |
 | `make uninstall` | Remove the copied files and `source` lines from rc files |
-| `make install-em` | Install sheme AND copy `em.sh`/`em.scm` to `~/` with shell integration |
-| `make uninstall-em` | Remove the em files and `source` lines |
 | `make check` | Syntax-check both bash and zsh versions |
 | `make test` | Run the interpreter test suite (177 bash + 202 zsh tests) |
 | `make test-io` | Run the I/O builtin test suite (41 tests, bash only) |
-| `make test-em` | Run the Scheme editor expect tests (5 tests) |
 | `make test-r5rs` | Run the R5RS compatibility test suite (~123 tests) |
-| `make test-all` | Run everything: interpreter + I/O + editor + R5RS tests |
+| `make test-all` | Run everything: interpreter + I/O + R5RS tests |
 | `make benchmark` | Run performance benchmarks for all language primitives |
 | `make example` | Run the feature demo script |
 | `make release` | Generate CHANGELOG, run tests, tag, and create GitHub release (default: patch bump) |
 | `make release BUMP=minor` | Same, but bump minor version |
 | `make release BUMP=major` | Same, but bump major version |
 
-## Running shemacs (em)
+## Terminal I/O Builtins
 
-sheme ships with `em`, an Emacs-like text editor written *entirely* in Scheme.  The entire editor — buffer management, cursor movement, rendering, key reading, file I/O, even `eval-buffer` — is ~1,300 lines of pure Scheme in `examples/em.scm`.  The shell launcher (`examples/em.sh`) is just a ~30-line shim that sources the interpreter, loads the Scheme file, and calls `(em-main)`.
-
-This is possible because sheme provides terminal I/O primitives as builtins — `read-byte`, `write-stdout`, `terminal-raw!`, `file-read`, `file-write`, and friends — so the Scheme code handles everything directly.  No shell-specific I/O wrappers needed.  The editor is **shell-neutral**: if sheme ran on a different host language tomorrow, `em.scm` would work unchanged.
-
-Currently **bash only** (requires bash 4+) because the terminal I/O builtins need direct access to file descriptors, which zsh's deferred execution model doesn't support.
-
-```bash
-# Run directly from the repo
-bash examples/em.sh [filename]
-
-# Or install the em command into your shell
-make install-em
-em myfile.txt
-
-# Source it in your .bashrc for instant startup
-source ~/.em.sh
-```
-
-### Architecture
-
-```
-┌──────────────────────────────────────────────────┐
-│  em.scm (~1,300 lines of pure Scheme)            │
-│  ┌────────────┐ ┌──────────┐ ┌────────────────┐  │
-│  │ Buffer ops  │ │ Renderer │ │ Key reader     │  │
-│  │ Kill ring   │ │ (ANSI)   │ │ (read-byte)    │  │
-│  │ Undo stack  │ │          │ │                │  │
-│  │ Search      │ │          │ │                │  │
-│  └────────────┘ └──────────┘ └────────────────┘  │
-│  ┌────────────┐ ┌──────────┐ ┌────────────────┐  │
-│  │ File I/O   │ │ Eval     │ │ Main loop      │  │
-│  │ (file-read │ │ (eval-   │ │ (terminal-raw! │  │
-│  │  file-write)│ │  string) │ │  terminal-size)│  │
-│  └────────────┘ └──────────┘ └────────────────┘  │
-├──────────────────────────────────────────────────┤
-│  bs.sh — sheme interpreter (bash/zsh)             │
-│  Terminal I/O builtins: read-byte, write-stdout,  │
-│  terminal-raw!, terminal-restore!, terminal-size, │
-│  file-read, file-write, eval-string              │
-├──────────────────────────────────────────────────┤
-│  em.sh — thin launcher (~30 lines)               │
-│  Sources bs.sh, loads em.scm, calls (em-main)    │
-└──────────────────────────────────────────────────┘
-```
-
-### Editor Commands
-
-| Key | Action |
-|-----|--------|
-| C-f / C-b | Forward / backward character |
-| C-n / C-p | Next / previous line |
-| C-a / C-e | Beginning / end of line |
-| C-v / M-v | Page down / page up |
-| M-f / M-b | Forward / backward word |
-| C-d | Delete character |
-| Backspace | Delete backward |
-| C-k | Kill line |
-| C-y | Yank (paste) |
-| C-w | Kill region |
-| M-w | Copy region |
-| C-SPC | Set mark |
-| C-/ | Undo |
-| C-s / C-r | Incremental search forward / backward |
-| M-u / M-l / M-c | Upcase / downcase / capitalize word |
-| C-j | Evaluate buffer as Scheme (eval-buffer) |
-| M-x | Execute named command (e.g. `eval-buffer`) |
-| C-x C-s | Save file |
-| C-x C-c | Quit |
-
-### Terminal I/O Builtins
-
-These builtins power the editor and are available for any Scheme program.  **Bash only.**
+sheme provides terminal I/O primitives as builtins, enabling Scheme
+programs to interact directly with the terminal.  **Bash only** (requires
+bash 4+) — these builtins need direct file descriptor access.
 
 | Builtin | Description |
 |---------|-------------|
@@ -192,7 +120,9 @@ The editor was now *pure*.  Shell-neutral.  1,300 lines of Scheme that handled e
 
 Sir Reginald knocked the programmer's coffee off the desk.  Not out of malice.  Out of *editorial judgment*.
 
-As of this writing, sheme implements a reasonable subset of R5RS Scheme, passes 548 tests across both shells (including 123 R5RS compatibility tests and 41 I/O builtin tests), and ships with a text editor that is, to the best of anyone's knowledge, the only Emacs clone running on a Scheme interpreter running on bash.  It has been used in production by exactly one person, who also wrote it.  Sir Reginald continues to withhold his endorsement, citing "procedural concerns" and "insufficient tuna."
+The editor itself has since moved to its own home at [shemacs](https://github.com/jordanhubbard/shemacs), where it lives alongside its bash and zsh siblings.  sheme continues as a pure Scheme interpreter for shell programmers, and the terminal I/O builtins remain for anyone who wants to write *real programs* entirely in Scheme.
+
+As of this writing, sheme implements a reasonable subset of R5RS Scheme, passes 548 tests across both shells (including 123 R5RS compatibility tests and 41 I/O builtin tests).  It has been used in production by exactly one person, who also wrote it.  Sir Reginald continues to withhold his endorsement, citing "procedural concerns" and "insufficient tuna."
 
 The project motto remains: **"It's not about whether you *should*.  It's about whether you *can*.  And also whether your cat respects you.  (He doesn't.)"**
 

@@ -1,23 +1,5 @@
 #!/usr/bin/env bash
-# em - Emacs-like editor powered by sheme
-#
-# This is a convenience wrapper.
-# It tries the installed location first (~/.em.sh), then falls back to the repo.
-
-set -euo pipefail
-
-# Try installed location first
-if [[ -f "$HOME/.em.sh" ]]; then
-    exec bash "$HOME/.em.sh" "$@"
-fi
-
-# Fall back to repo layout
-EM_DIR="$(cd "$(dirname "$(readlink -f "$0" 2>/dev/null || echo "$0")")/.." && pwd)"
-
-if [[ -f "$EM_DIR/examples/em.sh" ]]; then
-    exec bash "$EM_DIR/examples/em.sh" "$@"
-fi
-
-echo "em: cannot find em.sh" >&2
-echo "    Try: cd <sheme-dir> && make install-em" >&2
+# This launcher has moved to the shemacs project.
+# See: https://github.com/jordanhubbard/shemacs
+echo "em: the shemacs editor has moved to https://github.com/jordanhubbard/shemacs" >&2
 exit 1

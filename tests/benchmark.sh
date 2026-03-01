@@ -88,21 +88,4 @@ _bm_time "fib 10" "(begin (define (fib n) (if (< n 2) n (+ (fib (- n 1)) (fib (-
 _bm_time "named let sum 1-100" "(let loop ((i 1) (acc 0)) (if (> i 100) acc (loop (+ i 1) (+ acc i))))" 3
 
 echo ""
-echo "── Editor-like operations ──"
-# Simulate what em.scm does: load code, then handle a key
-bs-reset
-_em_scm="$(cat "$SCRIPT_DIR/examples/em.scm")"
-echo "  Loading em.scm (one-time cost)..."
-start=$(date +%s%N 2>/dev/null || python3 -c 'import time; print(int(time.time()*1e9))')
-bs "$_em_scm" 2>/dev/null
-end=$(date +%s%N 2>/dev/null || python3 -c 'import time; print(int(time.time()*1e9))')
-elapsed=$(( (end - start) / 1000000 ))
-printf '  %-45s %4d ms\n' "Load em.scm" "$elapsed"
-
-bs '(em-init 24 80)' 2>/dev/null
-_bm_time "em-handle-key (self-insert)" '(em-handle-key "SELF:a" 24 80)' 3
-_bm_time "em-handle-key (C-f)" '(em-handle-key "C-f" 24 80)' 3
-_bm_time "em-handle-key (C-a)" '(em-handle-key "C-a" 24 80)' 3
-
-echo ""
 echo "Done."

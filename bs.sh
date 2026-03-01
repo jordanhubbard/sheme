@@ -92,7 +92,8 @@ __bs_is_builtin() {
         'char?'|'char->integer'|'integer->char'|'char=?'|'char<?'|'char-alphabetic?'|'char-numeric?') return 0 ;;
         display|write|newline|apply|error|'read-line') return 0 ;;
         'read-byte'|'read-byte-timeout'|'write-stdout'|'terminal-size') return 0 ;;
-        'terminal-raw!'|'terminal-restore!'|'file-read'|'file-write'|'eval-string') return 0 ;;
+        'terminal-raw!'|'terminal-restore!'|'terminal-suspend!'|'file-read'|'file-write'|'eval-string') return 0 ;;
+        'file-glob'|'file-directory?'|'file-write-atomic'|'shell-capture'|'shell-exec') return 0 ;;
         'make-vector'|vector|'vector-ref'|'vector-set!'|'vector-length'|'vector->list'|'list->vector'|'vector?') return 0 ;;
         'exact->inexact'|'inexact->exact'|exact|inexact|floor|ceiling|round|truncate) return 0 ;;
         'call-with-current-continuation'|'call/cc') return 0 ;;
@@ -1315,6 +1316,42 @@ __bs_apply() {                        # proc [args...]
                 local _err="${__bs_last_error:-unknown error}"
                 __bs_cons "b:#f" "s:$_err"
             fi ;;
+
+        # ── Terminal / File / Shell extensions ────────────────────────
+        'f:terminal-suspend!')
+            kill -TSTP $$ 2>/dev/null
+            __bs_ret="n:()" ;;
+        'f:file-glob')
+            local _pat="${args[0]:2}" _f
+            local -a _matches=()
+            for _f in ${_pat}*; do
+                [[ -e "$_f" ]] || continue
+                _matches+=("$_f")
+            done
+            local _list="n:()"
+            local -i _gi
+            for (( _gi=${#_matches[@]}-1; _gi>=0; _gi-- )); do
+                __bs_cons "s:${_matches[$_gi]}" "$_list"
+                _list="$__bs_ret"
+            done
+            __bs_ret="$_list" ;;
+        'f:file-directory?')
+            [[ -d "${args[0]:2}" ]] && __bs_ret="b:#t" || __bs_ret="b:#f" ;;
+        'f:file-write-atomic')
+            local _path="${args[0]:2}" _content="${args[1]:2}"
+            local _tmp="${_path}.em$$"
+            if { printf '%s\n' "$_content" > "$_tmp"; } 2>/dev/null && mv -f "$_tmp" "$_path" 2>/dev/null; then
+                __bs_ret="b:#t"
+            else
+                rm -f "$_tmp" 2>/dev/null
+                __bs_ret="b:#f"
+            fi ;;
+        'f:shell-capture')
+            local _out
+            _out=$(eval "${args[0]:2}" 2>/dev/null) && __bs_ret="s:$_out" || __bs_ret="b:#f" ;;
+        'f:shell-exec')
+            printf '%s' "${args[1]:2}" | eval "${args[0]:2}" 2>/dev/null
+            [[ $? -eq 0 ]] && __bs_ret="b:#t" || __bs_ret="b:#f" ;;
 
         # ── Vector ────────────────────────────────────────────────────
         'f:make-vector')
