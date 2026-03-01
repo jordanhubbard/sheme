@@ -1079,7 +1079,8 @@
   (cond
     ;; C-x prefix
     ((equal? key "C-x")
-     (set! em-mode "cx-prefix"))
+     (set! em-mode "cx-prefix")
+     (set! em-message "C-x -"))
     ;; ESC prefix (bare ESC without timeout → read next key as meta)
     ((equal? key "ESC")
      (set! em-mode "esc-prefix"))
@@ -1136,7 +1137,7 @@
 (define (em-cx-dispatch key)
   (set! em-mode "normal")
   (cond
-    ((equal? key "C-c") (em-do-quit))
+    ((equal? key "C-c") (set! em-message "C-x C-c") (em-do-quit))
     ((equal? key "C-s") (em-do-save))
     ((or (equal? key "u") (equal? key "SELF:u")) (em-undo))
     ((or (equal? key "h") (equal? key "SELF:h"))

@@ -56,6 +56,25 @@ em() {
     trap 'printf "\e[0m\e[?25h\e[?1049l"; [[ -n "$__bs_stty_saved" ]] && stty "$__bs_stty_saved" 2>/dev/null; __bs_stty_saved=""; trap - INT TERM HUP; return 143' TERM
     trap 'printf "\e[0m\e[?25h\e[?1049l"; [[ -n "$__bs_stty_saved" ]] && stty "$__bs_stty_saved" 2>/dev/null; __bs_stty_saved=""; trap - INT TERM HUP; return 129' HUP
 
+    # Warn before loading very large files (>= 10MB)
+    if [[ -n "${1:-}" && -f "$1" ]]; then
+        local _em_fsize
+        _em_fsize=$(stat -f%z "$1" 2>/dev/null) || _em_fsize=$(stat --format=%s "$1" 2>/dev/null) || _em_fsize=0
+        if (( _em_fsize >= 10485760 )); then
+            local _em_mb=$(( _em_fsize / 1048576 ))
+            printf "Warning: %s is %d MB.\n" "$1" "$_em_mb" >&2
+            case "$1" in
+                *.json)         printf "  Hint: consider 'jq' for JSON files.\n" >&2 ;;
+                *.html|*.htm)   printf "  Hint: consider 'tidy' for HTML files.\n" >&2 ;;
+                *.xml)          printf "  Hint: consider 'xmllint' for XML files.\n" >&2 ;;
+                *.csv)          printf "  Hint: consider a spreadsheet or 'csvtool' for CSV files.\n" >&2 ;;
+                *.log)          printf "  Hint: consider 'less' or 'tail' for log files.\n" >&2 ;;
+            esac
+            printf "Press Enter to continue or Ctrl-C to abort: " >&2
+            read -r || { trap - INT TERM HUP; [[ -n "$_em_saved_traps" ]] && eval "$_em_saved_traps"; return 130; }
+        fi
+    fi
+
     # Escape filename for Scheme and run the editor
     local _em_escaped="${1:-}"
     _em_escaped="${_em_escaped//\\/\\\\}"
