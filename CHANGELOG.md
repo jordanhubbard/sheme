@@ -24,6 +24,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Update README to reflect choice of 'sheme'
 
 
+## [1.0.2] - 2026-03-01
+
+### Fixed
+- correct bash regex patterns in changelog categorizer
+
+### Other
+- Rename bad-scheme → sheme, bad-emacs → shemacs
+- Address @forthrin's remaining feedback on shemacs issue #5
+- Fix dsusp conflict in terminal-raw! (shemacs issue #2)
+- Move editor to shemacs; replace examples with Scheme programs
+- Add new builtins for shemacs em.scm; spin off editor to shemacs; clean up docs
+- Update README to reflect choice of 'sheme'
+
+
 ## [1.0.1] - 2026-02-28
 
 ### Added
