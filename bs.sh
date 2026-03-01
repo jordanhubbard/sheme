@@ -1269,7 +1269,7 @@ __bs_apply() {                        # proc [args...]
             __bs_cons "i:$_rows" "i:$_cols" ;;
         'f:terminal-raw!')
             __bs_stty_saved=$(stty -g 2>/dev/null)
-            stty raw -echo -isig -ixon -ixoff -icrnl intr undef quit undef susp undef lnext undef 2>/dev/null
+            stty raw -echo -isig -ixon -ixoff -icrnl intr undef quit undef susp undef dsusp undef lnext undef 2>/dev/null
             __bs_ret="n:()" ;;
         'f:terminal-restore!')
             if [[ -n "$__bs_stty_saved" ]]; then
