@@ -303,6 +303,11 @@ bs_run '(string>=? "b" "b")'; assert "string>=? equal" "$__bs_last" "b:#t"
 bs_run '(make-string 5 #\x)'; assert "make-string" "$__bs_last" "s:xxxxx"
 bs_run '(string-copy "hello")'; assert "string-copy" "$__bs_last" "s:hello"
 bs_run '(string #\h #\i)'; assert "string constructor from chars" "$__bs_last" "s:hi"
+bs_run '(string->list "abc")'; assert "string->list" "$result" "(a b c)"
+bs_run '(string->list "")'; assert "string->list empty" "$result" "()"
+bs_run '(list->string (list #\h #\i))'; assert "list->string" "$__bs_last" "s:hi"
+bs_run '(list->string (list))'; assert "list->string empty" "$__bs_last" "s:"
+bs_run '(list->string (string->list "scheme"))'; assert "string->list->string roundtrip" "$__bs_last" "s:scheme"
 
 # ── 27. Additional arithmetic ────────────────────────────────────────────────
 bs-reset

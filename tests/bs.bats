@@ -956,6 +956,31 @@ bs_run() {
     [[ "$__bs_last" == "s:hi" ]]
 }
 
+@test "string->list" {
+    bs_run '(string->list "abc")'
+    [[ "$result" == "(a b c)" ]]
+}
+
+@test "string->list empty" {
+    bs_run '(string->list "")'
+    [[ "$result" == "()" ]]
+}
+
+@test "list->string" {
+    bs_run '(list->string (list #\h #\e #\l #\l #\o))'
+    [[ "$__bs_last" == "s:hello" ]]
+}
+
+@test "list->string empty" {
+    bs_run '(list->string (list))'
+    [[ "$__bs_last" == "s:" ]]
+}
+
+@test "string->list->string roundtrip" {
+    bs_run '(list->string (string->list "scheme"))'
+    [[ "$__bs_last" == "s:scheme" ]]
+}
+
 # ────────────────────────────────────────────────────────────────────────────
 # 27. Additional arithmetic
 # ────────────────────────────────────────────────────────────────────────────

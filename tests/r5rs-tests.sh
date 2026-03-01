@@ -426,8 +426,8 @@ else
     (( __test_fail++ ))
 fi
 
-skip_test "string->list" "not implemented in bad-scheme"
-skip_test "list->string" "not implemented in bad-scheme"
+test_equal "string->list" '(string->list "abc")' "(a b c)"
+test_equal "list->string" '(list->string (list #\a #\b #\c))' "abc"
 
 (( __test_num++ ))
 bs-reset

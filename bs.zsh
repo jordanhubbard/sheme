@@ -114,7 +114,7 @@ bs() {
             'string-length'|'string-append'|substring|'string->number'|'number->string') return 0 ;;
             'string->symbol'|'symbol->string'|'string=?'|'string<?'|'string>?') return 0 ;;
             'string<=?'|'string>=?'|'string-ref'|string|'make-string'|'string-copy') return 0 ;;
-            'string-upcase'|'string-downcase') return 0 ;;
+            'string-upcase'|'string-downcase'|'string->list'|'list->string') return 0 ;;
             'char?'|'char->integer'|'integer->char'|'char=?'|'char<?'|'char-alphabetic?'|'char-numeric?') return 0 ;;
             display|write|newline|apply|error|'read-line') return 0 ;;
             'make-vector'|vector|'vector-ref'|'vector-set!'|'vector-length'|'vector->list'|'list->vector'|'vector?') return 0 ;;
@@ -1204,6 +1204,21 @@ bs() {
             'f:string-downcase')
                 local _sd="${args[0]:2}"
                 __bs_ret="s:${(L)_sd}" ;;
+            'f:string->list')
+                local _sl="${args[0]:2}" _lst="n:()"
+                local _si
+                for (( _si=${#_sl}-1; _si>=0; _si-- )); do
+                    __bs_cons "c:${_sl:$_si:1}" "$_lst"
+                    _lst="$__bs_ret"
+                done
+                __bs_ret="$_lst" ;;
+            'f:list->string')
+                local _ls="" _cur="${args[0]}"
+                while [[ "$_cur" != "n:()" ]]; do
+                    _ls+="${__bs_car[$_cur]:2}"
+                    _cur="${__bs_cdr[$_cur]}"
+                done
+                __bs_ret="s:$_ls" ;;
 
             # ── Char ──────────────────────────────────────────────────────
             'f:char->integer')
