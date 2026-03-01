@@ -1,0 +1,28 @@
+# Changelog
+
+## v1.0.0 — 2026-02-28
+
+- Initial commit (384e575)
+- Initial plan (6f3265e)
+- Initial plan (db3e93b)
+- Update README with zsh support and additional sections (8121d3d)
+- Revise README to elaborate on Scheme installation issues (8d95b2d)
+- Revise README for clarity and inclusivity (5490942)
+- Merge pull request #1 from jordanhubbard/copilot/implement-scheme-interpreter (de1fa6a)
+- Merge pull request #2 from jordanhubbard/copilot/add-test-suite-for-bad-scheme (4379dc9)
+- Initial plan (b314afb)
+- feat: implement Scheme interpreter in Bash (bad-scheme) (5d44f0c)
+- Fix duplicate comment and dead code in bad-scheme.sh (1151620)
+- Merge pull request #3 from jordanhubbard/copilot/resume-open-sessions (710a200)
+- Encapsulate interpreter internals; add comprehensive test coverage (b619816)
+- Add Makefile and example demo script (912e829)
+- feat: add zsh-native Scheme interpreter (3ef405b)
+- Add Responsible MCP support (9b24d05)
+- feat: add Scheme editor (em) and replace bs() with inline execution (2d6a575)
+- ci: add editor expect tests and update bash smoke tests (d259206)
+- Add make targets, install-em, and fix CI expect timeouts (f7182e4)
+- docs: update README with usage guide and origin story (24927a1)
+- docs: clarify bs() vs bs-eval() usage in README (b7976c7)
+- Rename source files, vector-based editor, eval-buffer, R5RS tests (c2f2847)
+- Add terminal I/O builtins, make em.scm standalone, add I/O tests (c832dde)
+- Add make release target for automated versioning and GitHub releases (0844bd8)
