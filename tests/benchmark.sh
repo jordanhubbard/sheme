@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# benchmark.sh - Performance tests for bad-scheme primitives
+# benchmark.sh - Performance tests for sheme primitives
 #
 # Measures the time for each category of operation to identify bottlenecks.
 # Run:  bash tests/benchmark.sh
@@ -28,7 +28,7 @@ _bm_time() {
     printf '  %-45s %4d ms total  (%d ms/call, n=%d)\n' "$desc" "$elapsed" "$per_call" "$n"
 }
 
-echo "=== bad-scheme Performance Benchmarks ==="
+echo "=== sheme Performance Benchmarks ==="
 echo ""
 echo "All operations run inline (no subshell fork)."
 echo ""

@@ -5,7 +5,7 @@ set timeout 120
 spawn bash [file join [file dirname [info script]] .. examples em.sh]
 
 expect {
-    "bad emacs" { puts "\nPASS: editor started" }
+    "shemacs" { puts "\nPASS: editor started" }
     timeout { puts "\nFAIL: editor did not start"; exit 1 }
 }
 

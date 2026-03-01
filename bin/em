@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# em - Emacs-like editor powered by bad-scheme
+# em - Emacs-like editor powered by sheme
 #
 # This is a convenience wrapper.
 # It tries the installed location first (~/.em.sh), then falls back to the repo.
@@ -19,5 +19,5 @@ if [[ -f "$EM_DIR/examples/em.sh" ]]; then
 fi
 
 echo "em: cannot find em.sh" >&2
-echo "    Try: cd <bad-scheme-dir> && make install-em" >&2
+echo "    Try: cd <sheme-dir> && make install-em" >&2
 exit 1

@@ -106,7 +106,7 @@ __bs_is_builtin() {
 # ── Error helper ──────────────────────────────────────────────────────
 __bs_error() {
     __bs_last_error="$*"
-    printf 'bad-scheme: %s\n' "$*" >&2
+    printf 'sheme: %s\n' "$*" >&2
     __bs_ret="n:()"
 }
 

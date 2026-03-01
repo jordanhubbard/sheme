@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# scripts/release.sh — Automated release for bad-scheme
+# scripts/release.sh — Automated release for sheme
 # Usage: bash scripts/release.sh [patch|minor|major]
 # Called by: make release [BUMP=patch|minor|major]
 

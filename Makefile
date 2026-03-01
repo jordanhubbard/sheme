@@ -5,13 +5,13 @@ BUMP ?= patch
 .PHONY: install install-em uninstall uninstall-em check test test-io test-em test-r5rs test-all benchmark example release
 
 install:
-	@echo "Installing bad-scheme to home directory..."
+	@echo "Installing sheme to home directory..."
 	@cp "$(SRCDIR)/bs.sh" "$(HOME)/.bs.sh"
 	@cp "$(SRCDIR)/bs.zsh" "$(HOME)/.bs.zsh"
 	@echo "Installed ~/.bs.sh and ~/.bs.zsh"
 	@if ! grep -q 'source.*\.bs\.sh' "$(HOME)/.bashrc" 2>/dev/null; then \
 		echo '' >> "$(HOME)/.bashrc"; \
-		echo '# bad-scheme - Scheme interpreter as shell functions' >> "$(HOME)/.bashrc"; \
+		echo '# sheme - Scheme interpreter as shell functions' >> "$(HOME)/.bashrc"; \
 		echo 'source "$(HOME)/.bs.sh"' >> "$(HOME)/.bashrc"; \
 		echo "Added source line to ~/.bashrc"; \
 	else \
@@ -19,7 +19,7 @@ install:
 	fi
 	@if ! grep -q 'source.*\.bs\.zsh' "$(HOME)/.zshrc" 2>/dev/null; then \
 		echo '' >> "$(HOME)/.zshrc"; \
-		echo '# bad-scheme - Scheme interpreter as shell functions' >> "$(HOME)/.zshrc"; \
+		echo '# sheme - Scheme interpreter as shell functions' >> "$(HOME)/.zshrc"; \
 		echo 'source "$(HOME)/.bs.zsh"' >> "$(HOME)/.zshrc"; \
 		echo "Added source line to ~/.zshrc"; \
 	else \
@@ -45,9 +45,9 @@ install-em: install
 
 uninstall:
 	@rm -f "$(HOME)/.bs.sh" "$(HOME)/.bs.zsh"
-	@[ -f "$(HOME)/.bashrc" ] && sed -i '' '/# bad-scheme/d; /source.*\.bs\./d' "$(HOME)/.bashrc" || true
-	@[ -f "$(HOME)/.zshrc" ] && sed -i '' '/# bad-scheme/d; /source.*\.bs\./d' "$(HOME)/.zshrc" || true
-	@echo "Uninstalled bad-scheme."
+	@[ -f "$(HOME)/.bashrc" ] && sed -i '' '/# bad-scheme/d; /# sheme/d; /source.*\.bs\./d' "$(HOME)/.bashrc" || true
+	@[ -f "$(HOME)/.zshrc" ] && sed -i '' '/# bad-scheme/d; /# sheme/d; /source.*\.bs\./d' "$(HOME)/.zshrc" || true
+	@echo "Uninstalled sheme."
 
 uninstall-em:
 	@rm -f "$(HOME)/.em.sh" "$(HOME)/.em.scm"

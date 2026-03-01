@@ -1,14 +1,14 @@
-# bad-scheme: A Scheme Interpreter in Bash
+# sheme: A Scheme Interpreter in Bash
 
 ## Overview
 
-`bad-scheme` is a Scheme interpreter implemented entirely in Bash. It evaluates
+`sheme` is a Scheme interpreter implemented entirely in Bash. It evaluates
 Scheme source code and exposes top-level bindings as Bash variables.
 
 ## Intended Usage
 
 ```bash
-source bad-scheme.sh
+source bs.sh
 eval "$(bs '(define x 1)')"
 eval "$(bs '(set! x (+ x 41))')"
 echo "$x"   # => i:42 (tagged integer)
@@ -56,7 +56,7 @@ Derived forms (desugared in the evaluator):
 - `declare -g __bs_last=<value>` always emitted
 
 ### Phase 6 – Tests & CI
-- `tests/bad-scheme.bats` using the [bats](https://github.com/bats-core/bats-core) framework
+- `tests/bs.bats` using the [bats](https://github.com/bats-core/bats-core) framework
 - `.github/workflows/ci.yml` GitHub Actions pipeline
 
 ## Value Representation

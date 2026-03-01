@@ -1,5 +1,5 @@
-# bad-scheme
-This is a bad scheme interpreter written in bash / zsh.  Its purpose is to be an intermediate language for other bad bash / zsh scripts that will look less bad when written in an HONORABLE language like scheme.
+# sheme
+sheme — a Scheme interpreter in bash/zsh.  Its purpose is to be an intermediate language for shell scripts that will look less bad when written in an HONORABLE language like scheme.
 
 ## Preface
 
@@ -17,8 +17,8 @@ I write a lot of bash scripts.  Bash is turing complete (or this "transpiler" wo
 
 ```bash
 # Clone the repository
-git clone https://github.com/jordanhubbard/bad-scheme.git
-cd bad-scheme
+git clone https://github.com/jordanhubbard/sheme.git
+cd sheme
 
 # Source it in your current shell
 source bs.sh    # or bs.zsh for The Other People
@@ -51,7 +51,7 @@ make example
 |--------|-------------|
 | `make install` | Copy `bs.sh` and `bs.zsh` to `~/` and add `source` lines to `~/.bashrc` and `~/.zshrc` |
 | `make uninstall` | Remove the copied files and `source` lines from rc files |
-| `make install-em` | Install bad-scheme AND copy `em.sh`/`em.scm` to `~/` with shell integration |
+| `make install-em` | Install sheme AND copy `em.sh`/`em.scm` to `~/` with shell integration |
 | `make uninstall-em` | Remove the em files and `source` lines |
 | `make check` | Syntax-check both bash and zsh versions |
 | `make test` | Run the interpreter test suite (177 bash + 202 zsh tests) |
@@ -65,11 +65,11 @@ make example
 | `make release BUMP=minor` | Same, but bump minor version |
 | `make release BUMP=major` | Same, but bump major version |
 
-## Running bad-emacs (em)
+## Running shemacs (em)
 
-bad-scheme ships with `em`, an Emacs-like text editor written *entirely* in Scheme.  The entire editor — buffer management, cursor movement, rendering, key reading, file I/O, even `eval-buffer` — is ~1,300 lines of pure Scheme in `examples/em.scm`.  The shell launcher (`examples/em.sh`) is just a ~30-line shim that sources the interpreter, loads the Scheme file, and calls `(em-main)`.
+sheme ships with `em`, an Emacs-like text editor written *entirely* in Scheme.  The entire editor — buffer management, cursor movement, rendering, key reading, file I/O, even `eval-buffer` — is ~1,300 lines of pure Scheme in `examples/em.scm`.  The shell launcher (`examples/em.sh`) is just a ~30-line shim that sources the interpreter, loads the Scheme file, and calls `(em-main)`.
 
-This is possible because bad-scheme provides terminal I/O primitives as builtins — `read-byte`, `write-stdout`, `terminal-raw!`, `file-read`, `file-write`, and friends — so the Scheme code handles everything directly.  No shell-specific I/O wrappers needed.  The editor is **shell-neutral**: if bad-scheme ran on a different host language tomorrow, `em.scm` would work unchanged.
+This is possible because sheme provides terminal I/O primitives as builtins — `read-byte`, `write-stdout`, `terminal-raw!`, `file-read`, `file-write`, and friends — so the Scheme code handles everything directly.  No shell-specific I/O wrappers needed.  The editor is **shell-neutral**: if sheme ran on a different host language tomorrow, `em.scm` would work unchanged.
 
 Currently **bash only** (requires bash 4+) because the terminal I/O builtins need direct access to file descriptors, which zsh's deferred execution model doesn't support.
 
@@ -102,7 +102,7 @@ source ~/.em.sh
 │  │  file-write)│ │  string) │ │  terminal-size)│  │
 │  └────────────┘ └──────────┘ └────────────────┘  │
 ├──────────────────────────────────────────────────┤
-│  bs.sh — bad-scheme interpreter (bash/zsh)       │
+│  bs.sh — sheme interpreter (bash/zsh)             │
 │  Terminal I/O builtins: read-byte, write-stdout,  │
 │  terminal-raw!, terminal-restore!, terminal-size, │
 │  file-read, file-write, eval-string              │
@@ -152,13 +152,13 @@ These builtins power the editor and are available for any Scheme program.  **Bas
 | `(file-write path content)` | Write string to file (with trailing newline). Returns `#t`/`#f`. |
 | `(eval-string code)` | Evaluate Scheme code at runtime. Returns `(#t . result)` or `(#f . error)`. |
 
-## The Totally True and Not At All Embellished History of bad-scheme
+## The Totally True and Not At All Embellished History of sheme
 
 It was a dark and stormy night in late 2024.  A lone programmer, hunched over a mass of tangled bash functions that had somehow metastasized into a text editor, stared at his screen and whispered the words that would change history: "What if I wrote a Scheme interpreter... *in bash*?"  (The result would later be renamed from `bad-scheme.sh` to `bs.sh`, because brevity is the soul of wit, and also of `source` commands.)
 
 His cat, Sir Reginald von Fluffington III, looked up from the keyboard he was sleeping on and blinked once, slowly, in the way that cats do when they are judging you but wish to maintain plausible deniability.
 
-"Think about it, Reggie," the programmer continued, gesturing at the 2,451 lines of bash that constituted `bad-emacs`.  "All these functions.  All these arrays.  All this... *string manipulation*.  What if it were... *elegant*?"
+"Think about it, Reggie," the programmer continued, gesturing at the 2,451 lines of bash that constituted `shemacs`.  "All these functions.  All these arrays.  All this... *string manipulation*.  What if it were... *elegant*?"
 
 Sir Reginald yawned.  He had seen the programmer's definition of "elegant" before.  It usually involved more parentheses.
 
@@ -166,7 +166,7 @@ What followed was a period that historians would later call "The Great Parenthes
 
 "It's alive!" the programmer cried, when `(+ 1 2)` finally returned `3`.  Sir Reginald was unimpressed.  He could count to three.  He had three functioning brain cells and each of them was dedicated to the task of procuring second breakfast.
 
-But the programmer was not done.  "Now," he declared, with the wild-eyed certainty of a man who has Just Had An Idea, "I shall rewrite bad-emacs *in Scheme*.  Running on bad-scheme.  Running on bash.  It will be a text editor, written in a language that runs inside the shell, editing files that contain more shell.  It's turtles all the way down, Reggie!"
+But the programmer was not done.  "Now," he declared, with the wild-eyed certainty of a man who has Just Had An Idea, "I shall rewrite shemacs *in Scheme*.  Running on sheme.  Running on bash.  It will be a text editor, written in a language that runs inside the shell, editing files that contain more shell.  It's turtles all the way down, Reggie!"
 
 Sir Reginald left the room.
 
@@ -192,19 +192,19 @@ The editor was now *pure*.  Shell-neutral.  1,300 lines of Scheme that handled e
 
 Sir Reginald knocked the programmer's coffee off the desk.  Not out of malice.  Out of *editorial judgment*.
 
-As of this writing, bad-scheme implements a reasonable subset of R5RS Scheme, passes 548 tests across both shells (including 123 R5RS compatibility tests and 41 I/O builtin tests), and ships with a text editor that is, to the best of anyone's knowledge, the only Emacs clone running on a Scheme interpreter running on bash.  It has been used in production by exactly one person, who also wrote it.  Sir Reginald continues to withhold his endorsement, citing "procedural concerns" and "insufficient tuna."
+As of this writing, sheme implements a reasonable subset of R5RS Scheme, passes 548 tests across both shells (including 123 R5RS compatibility tests and 41 I/O builtin tests), and ships with a text editor that is, to the best of anyone's knowledge, the only Emacs clone running on a Scheme interpreter running on bash.  It has been used in production by exactly one person, who also wrote it.  Sir Reginald continues to withhold his endorsement, citing "procedural concerns" and "insufficient tuna."
 
 The project motto remains: **"It's not about whether you *should*.  It's about whether you *can*.  And also whether your cat respects you.  (He doesn't.)"**
 
 ## Suggested Projects
 
-bad-scheme now has terminal I/O, file I/O, and runtime eval.  This means you can write *real programs* — entirely in Scheme, entirely in your shell.  Here are some ideas, ranked roughly from "reasonable weekend project" to "cry for help."
+sheme now has terminal I/O, file I/O, and runtime eval.  This means you can write *real programs* — entirely in Scheme, entirely in your shell.  Here are some ideas, ranked roughly from "reasonable weekend project" to "cry for help."
 
 ### The Plausible
 
 **A Shell-Native REPL** — Write a Scheme REPL in Scheme.  Use `read-byte` for line editing with history, `eval-string` for evaluation, and `write-stdout` for output.  You'd have a REPL for the language that's running the REPL.  It's turtles, but *tasteful* turtles.
 
-**A TODO App / Personal Wiki** — A terminal UI for managing notes, with files stored as S-expressions.  bad-scheme already has full list and string processing; add `file-read`/`file-write` and you've got persistent storage.  Incremental search comes free from the editor code.
+**A TODO App / Personal Wiki** — A terminal UI for managing notes, with files stored as S-expressions.  sheme already has full list and string processing; add `file-read`/`file-write` and you've got persistent storage.  Incremental search comes free from the editor code.
 
 **A Hex Editor** — `read-byte` returns raw integers.  `file-read` gives you file contents.  `write-stdout` can output anything.  Write a hex viewer/editor in Scheme.  If it feels too easy, add undo.
 
@@ -226,8 +226,8 @@ bad-scheme now has terminal I/O, file I/O, and runtime eval.  This means you can
 
 **A Terminal Web Browser** — Use `curl` (shelling out from Scheme) to fetch pages, write an HTML tokenizer in Scheme, render a simplified DOM to the terminal.  Links are navigable.  Forms... exist, conceptually.  You browse the web inside a Scheme running inside bash.  Tim Berners-Lee weeps, but he can't tell if it's from joy or horror.
 
-**A Self-Hosted Bad-Scheme** — Write a Scheme interpreter in Scheme, running on bad-scheme, running on bash.  Use `eval-string` for the bootstrap, but then implement your own tokenizer, parser, and evaluator in the hosted language.  If it can run `em.scm`, you have achieved peak recursion and are legally required to stop.
+**A Self-Hosted Sheme** — Write a Scheme interpreter in Scheme, running on sheme, running on bash.  Use `eval-string` for the bootstrap, but then implement your own tokenizer, parser, and evaluator in the hosted language.  If it can run `em.scm`, you have achieved peak recursion and are legally required to stop.
 
 **A Music Tracker** — Use `write-stdout` to render a tracker-style grid interface.  Compose sequences of shell commands that produce sound (`printf '\a'` for the purists, `afplay` or `aplay` for the pragmatists).  Save compositions as S-expressions.  Perform live by editing patterns in real time.  Your DAW is bash.  Your synthesizer is `/dev/audio`.  Your audience has left.
 
-**A Conference Talk Slide Deck** — Write a presentation tool in Scheme.  Each slide is an S-expression.  Render with ANSI art.  Support transitions (implemented as recursive functions that redraw the screen).  Give your talk about bad-scheme *using* bad-scheme.  If the live demo crashes, it's not a bug, it's *performance art*.
+**A Conference Talk Slide Deck** — Write a presentation tool in Scheme.  Each slide is an S-expression.  Render with ANSI art.  Support transitions (implemented as recursive functions that redraw the screen).  Give your talk about sheme *using* sheme.  If the live demo crashes, it's not a bug, it's *performance art*.

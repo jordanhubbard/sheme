@@ -133,7 +133,7 @@ trap 'rm -rf "$TMPDIR_IO"' EXIT
 
 # ── Plan ──────────────────────────────────────────────────────────────
 echo "TAP version 13"
-echo "# I/O builtin tests for bad-scheme (bash only)"
+echo "# I/O builtin tests for sheme (bash only)"
 echo ""
 
 # ======================================================================

@@ -129,7 +129,7 @@ bs() {
 
     # ── Error helper ──────────────────────────────────────────────────────
     __bs_error() {
-        printf 'bad-scheme: %s\n' "$*" >&2
+        printf 'sheme: %s\n' "$*" >&2
         __bs_ret="n:()"
     }
 

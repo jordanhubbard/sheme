@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# tests/r5rs-tests.sh - R5RS compatibility test suite for bad-scheme
+# tests/r5rs-tests.sh - R5RS compatibility test suite for sheme
 # Outputs TAP (Test Anything Protocol) format.
 # Exit code 1 if any tests fail, 0 otherwise.
 
@@ -91,7 +91,7 @@ bs_multi() {
 
 # ── Plan ──────────────────────────────────────────────────────────────
 echo "TAP version 13"
-echo "# R5RS compatibility tests for bad-scheme"
+echo "# R5RS compatibility tests for sheme"
 echo ""
 
 # ======================================================================
@@ -253,7 +253,7 @@ else
     (( __test_fail++ ))
 fi
 
-skip_test "unquote-splicing" "not implemented in bad-scheme"
+skip_test "unquote-splicing" "not implemented in sheme"
 
 # ======================================================================
 # EQUIVALENCE PREDICATES
@@ -569,7 +569,7 @@ fi
 # ======================================================================
 # SKIPPED R5RS FEATURES
 # ======================================================================
-echo "# -- Skipped features (not in bad-scheme) --"
+echo "# -- Skipped features (not in sheme) --"
 
 skip_test "call/cc" "not implemented"
 skip_test "dynamic-wind" "not implemented"

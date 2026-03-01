@@ -31,7 +31,7 @@ em() {
         elif [[ -n "$_em_script_dir" && -f "$_em_script_dir/bs.sh" ]]; then
             source "$_em_script_dir/bs.sh"
         else
-            echo "em: cannot find bs.sh (install bad-scheme first)" >&2
+            echo "em: cannot find bs.sh (install sheme first)" >&2
             return 1
         fi
     fi

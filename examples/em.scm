@@ -1,6 +1,6 @@
-;; em.scm - A bad emacs clone in Scheme (runs on bad-scheme)
+;; em.scm - shemacs: an Emacs-like editor in Scheme (runs on sheme)
 ;;
-;; Standalone editor — all I/O handled via bad-scheme builtins.
+;; Standalone editor — all I/O handled via sheme builtins.
 ;; The bash launcher (em.sh) just sources bs.sh, loads this file,
 ;; and calls (em-main "filename").
 ;;
@@ -1173,7 +1173,7 @@
   (set! em-nlines 1)
   (set! em-cy 0) (set! em-cx 0) (set! em-top 0)
   (set! em-modified 0)
-  (set! em-message "em: bad emacs (C-x C-c to quit, C-h b for help)")
+  (set! em-message "em: shemacs (C-x C-c to quit, C-h b for help)")
   (set! em-mode "normal")
   (set! em-running #t)
   (set! em-kill-ring '())

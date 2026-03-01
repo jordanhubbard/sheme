@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# demo.sh - Showcase bad-scheme features
+# demo.sh - Showcase sheme features
 #
 # Run:  bash examples/demo.sh
 #   or: make example
@@ -68,7 +68,7 @@ bs-eval '(let loop ((i 1) (acc 0))
 # ─────────────────────────────────────────────────────────────────────────────
 banner "Strings"
 bs-eval '(string-append "Hello" ", " "World!")'
-bs-eval '(string-upcase "bad-scheme is honorable")'
+bs-eval '(string-upcase "sheme is honorable")'
 bs-eval '(string-length "Scheme")'
 
 # ─────────────────────────────────────────────────────────────────────────────
