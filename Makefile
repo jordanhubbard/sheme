@@ -2,7 +2,7 @@ SHELL := /bin/bash
 SRCDIR := $(abspath .)
 BUMP ?= patch
 
-.PHONY: install install-em uninstall uninstall-em check test test-io test-em test-r5rs test-all benchmark example release
+.PHONY: install uninstall check test test-io test-r5rs test-all benchmark example algorithms channels repl release
 
 install:
 	@echo "Installing sheme to home directory..."
@@ -27,32 +27,13 @@ install:
 	fi
 	@echo "Installed. Open a new shell or source your rc file."
 
-install-em: install
-	@echo ""
-	@echo "Installing em (Scheme-powered Emacs-like editor, bash only)..."
-	@cp "$(SRCDIR)/examples/em.sh" "$(HOME)/.em.sh"
-	@cp "$(SRCDIR)/examples/em.scm" "$(HOME)/.em.scm"
-	@echo "Installed ~/.em.sh and ~/.em.scm"
-	@if ! grep -q 'source.*\.em\.sh' "$(HOME)/.bashrc" 2>/dev/null; then \
-		echo '' >> "$(HOME)/.bashrc"; \
-		echo '# em - Scheme-powered Emacs-like editor (bash only)' >> "$(HOME)/.bashrc"; \
-		echo 'source "$(HOME)/.em.sh"' >> "$(HOME)/.bashrc"; \
-		echo "Added source line to ~/.bashrc"; \
-	else \
-		echo "~/.bashrc already sources ~/.em.sh"; \
-	fi
-	@echo "Run 'em [file]' to launch the editor (bash only; zsh version coming soon)."
-
 uninstall:
 	@rm -f "$(HOME)/.bs.sh" "$(HOME)/.bs.zsh"
-	@[ -f "$(HOME)/.bashrc" ] && sed -i '' '/# bad-scheme/d; /# sheme/d; /source.*\.bs\./d' "$(HOME)/.bashrc" || true
-	@[ -f "$(HOME)/.zshrc" ] && sed -i '' '/# bad-scheme/d; /# sheme/d; /source.*\.bs\./d' "$(HOME)/.zshrc" || true
+	@[ -f "$(HOME)/.bashrc" ] && sed -i '' '/# bad-scheme/d; /# sheme/d; /source.*\.bs\./d' "$(HOME)/.bashrc" 2>/dev/null || \
+		sed -i '/# bad-scheme/d; /# sheme/d; /source.*\.bs\./d' "$(HOME)/.bashrc" 2>/dev/null || true
+	@[ -f "$(HOME)/.zshrc" ] && sed -i '' '/# bad-scheme/d; /# sheme/d; /source.*\.bs\./d' "$(HOME)/.zshrc" 2>/dev/null || \
+		sed -i '/# bad-scheme/d; /# sheme/d; /source.*\.bs\./d' "$(HOME)/.zshrc" 2>/dev/null || true
 	@echo "Uninstalled sheme."
-
-uninstall-em:
-	@rm -f "$(HOME)/.em.sh" "$(HOME)/.em.scm"
-	@[ -f "$(HOME)/.bashrc" ] && sed -i '' '/# em - Scheme-powered/d; /source.*\.em\.sh/d' "$(HOME)/.bashrc" || true
-	@echo "Uninstalled Scheme-powered em."
 
 check:
 	@echo "Checking syntax..."
@@ -72,23 +53,27 @@ test-io:
 	@echo "── I/O builtin tests (bash only) ──"
 	@bash tests/io-tests.sh
 
-test-em:
-	@echo ""
-	@echo "── Scheme editor tests ──"
-	@bash tests/run_em_tests.sh
-
 test-r5rs:
 	@echo ""
 	@echo "── R5RS compatibility tests ──"
 	@bash tests/r5rs-tests.sh
 
-test-all: test test-io test-em test-r5rs
+test-all: test test-io test-r5rs
 
 benchmark:
 	@bash tests/benchmark.sh
 
 example: check
 	@bash examples/demo.sh
+
+algorithms: check
+	@bash examples/algorithms.sh
+
+channels: check
+	@bash examples/channels.sh
+
+repl: check
+	@bash examples/repl.sh
 
 release:
 	@bash scripts/release.sh $(BUMP)
