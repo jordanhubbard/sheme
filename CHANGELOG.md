@@ -1,37 +1,37 @@
 # Changelog
 
+All notable changes to sheme are documented here.
+Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
+
 > **Note**: The Emacs-like editor (`em.scm` / `em.scm.sh`) that was originally
 > developed as part of sheme has been spun out to its own project:
 > [shemacs](https://github.com/jordanhubbard/shemacs).
 > sheme is now a pure Scheme interpreter for shell programmers.
 
-## v1.0.1 — 2026-02-28
+## [Unreleased]
 
-- Add string->list and list->string builtins (5d8ef36)
+## [1.0.1] - 2026-02-28
 
-## v1.0.0 — 2026-02-28
+### Added
+- `string->list` and `list->string` builtins
 
-- Initial commit (384e575)
-- Initial plan (6f3265e)
-- Initial plan (db3e93b)
-- Update README with zsh support and additional sections (8121d3d)
-- Revise README to elaborate on Scheme installation issues (8d95b2d)
-- Revise README for clarity and inclusivity (5490942)
-- Merge pull request #1 from jordanhubbard/copilot/implement-scheme-interpreter (de1fa6a)
-- Merge pull request #2 from jordanhubbard/copilot/add-test-suite-for-bad-scheme (4379dc9)
-- Initial plan (b314afb)
-- feat: implement Scheme interpreter in Bash (bad-scheme) (5d44f0c)
-- Fix duplicate comment and dead code in bad-scheme.sh (1151620)
-- Merge pull request #3 from jordanhubbard/copilot/resume-open-sessions (710a200)
-- Encapsulate interpreter internals; add comprehensive test coverage (b619816)
-- Add Makefile and example demo script (912e829)
-- feat: add zsh-native Scheme interpreter (3ef405b)
-- Add Responsible MCP support (9b24d05)
-- feat: add Scheme editor (em) and replace bs() with inline execution (2d6a575)
-- ci: add editor expect tests and update bash smoke tests (d259206)
-- Add make targets, install-em, and fix CI expect timeouts (f7182e4)
-- docs: update README with usage guide and origin story (24927a1)
-- docs: clarify bs() vs bs-eval() usage in README (b7976c7)
-- Rename source files, vector-based editor, eval-buffer, R5RS tests (c2f2847)
-- Add terminal I/O builtins, make em.scm standalone, add I/O tests (c832dde)
-- Add make release target for automated versioning and GitHub releases (0844bd8)
+## [1.0.0] - 2026-02-28
+
+### Added
+- Scheme interpreter implemented as sourceable bash functions (`bs.sh`)
+- Zsh-native Scheme interpreter (`bs.zsh`) with full R5RS subset support
+- Terminal I/O builtins: `read-byte`, `write-stdout`, file I/O, `eval-string`
+- Comprehensive bash test suite (BATS format, 177 tests)
+- Zsh test suite (202 tests)
+- R5RS compatibility tests (123 tests) and I/O builtin tests (41 tests)
+- Performance benchmark suite
+- Example scripts: feature demo, algorithms, concurrency patterns, interactive REPL
+- `make release` target for automated versioning and GitHub releases
+
+### Changed
+- Encapsulated interpreter internals behind a public API (`bs` / `bs-eval`)
+- Renamed source files from `bad-scheme` to `bs.{sh,zsh}`
+- Rewrote editor as vector-based with `eval-buffer` support
+
+### Fixed
+- Duplicate comment and dead code in initial implementation
