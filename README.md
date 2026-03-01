@@ -11,7 +11,7 @@ I write a lot of bash scripts.  Bash is turing complete (or this "transpiler" wo
 2. Scheme is a *REAL* programming language, one worthy of respect and veneration.
 3. Therefore, writing shell code in Scheme will make you cool and similarly worthy of respect and veneration.
 4. You don't want to have to install a full scheme interpreter though.  That's way too much work, and it involves Life Decisions after reading scheme.org in detail.  Questions like:  "*WHICH* scheme?  How *MUCH* scheme is the _right amount_?  Should I go "classic" with r5rs or should I go for *ALL THE MARBLES* with r7rs?  Wait, isn't R7rs *TOO LARGE* though?  Should I ask this question on Reddit?  Oh god!  I don't want to ask this question on Reddit!"
-5. Hey!  I know what I'll do!  It's time for me to choose jkh's BAD SCHEME!
+5. Hey!  I know what I'll do!  It's time for me to choose sheme!  The no-compromise, no executables option!
 
 ## Quick Start
 
