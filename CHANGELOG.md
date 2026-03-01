@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.0.1 — 2026-02-28
+
+- Add string->list and list->string builtins (5d8ef36)
+
 ## v1.0.0 — 2026-02-28
 
 - Initial commit (384e575)
