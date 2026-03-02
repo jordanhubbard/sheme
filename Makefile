@@ -16,30 +16,30 @@ install: ## Install bs.sh and bs.zsh to home directory
 	@cp "$(SRCDIR)/bs.sh" "$(HOME)/.bs.sh"
 	@cp "$(SRCDIR)/bs.zsh" "$(HOME)/.bs.zsh"
 	@echo "Installed ~/.bs.sh and ~/.bs.zsh"
-	@if ! grep -q 'source.*\.bs\.sh' "$(HOME)/.bashrc" 2>/dev/null; then \
+	@if ! grep -q '# sheme install marker' "$(HOME)/.bashrc" 2>/dev/null; then \
 		echo '' >> "$(HOME)/.bashrc"; \
-		echo '# sheme - Scheme interpreter as shell functions' >> "$(HOME)/.bashrc"; \
-		echo 'source "$(HOME)/.bs.sh"' >> "$(HOME)/.bashrc"; \
+		echo '# sheme install marker' >> "$(HOME)/.bashrc"; \
+		echo '[[ -f "$$HOME/.bs.sh" ]] && source "$$HOME/.bs.sh"' >> "$(HOME)/.bashrc"; \
 		echo "Added source line to ~/.bashrc"; \
 	else \
-		echo "~/.bashrc already sources ~/.bs.sh"; \
+		echo "~/.bashrc already has sheme installed"; \
 	fi
-	@if ! grep -q 'source.*\.bs\.zsh' "$(HOME)/.zshrc" 2>/dev/null; then \
+	@if ! grep -q '# sheme install marker' "$(HOME)/.zshrc" 2>/dev/null; then \
 		echo '' >> "$(HOME)/.zshrc"; \
-		echo '# sheme - Scheme interpreter as shell functions' >> "$(HOME)/.zshrc"; \
-		echo 'source "$(HOME)/.bs.zsh"' >> "$(HOME)/.zshrc"; \
+		echo '# sheme install marker' >> "$(HOME)/.zshrc"; \
+		echo '[[ -f "$$HOME/.bs.zsh" ]] && source "$$HOME/.bs.zsh"' >> "$(HOME)/.zshrc"; \
 		echo "Added source line to ~/.zshrc"; \
 	else \
-		echo "~/.zshrc already sources ~/.bs.zsh"; \
+		echo "~/.zshrc already has sheme installed"; \
 	fi
 	@echo "Installed. Open a new shell or source your rc file."
 
 uninstall: ## Remove sheme from home directory
 	@rm -f "$(HOME)/.bs.sh" "$(HOME)/.bs.zsh"
-	@[ -f "$(HOME)/.bashrc" ] && sed -i '' '/# bad-scheme/d; /# sheme/d; /source.*\.bs\./d' "$(HOME)/.bashrc" 2>/dev/null || \
-		sed -i '/# bad-scheme/d; /# sheme/d; /source.*\.bs\./d' "$(HOME)/.bashrc" 2>/dev/null || true
-	@[ -f "$(HOME)/.zshrc" ] && sed -i '' '/# bad-scheme/d; /# sheme/d; /source.*\.bs\./d' "$(HOME)/.zshrc" 2>/dev/null || \
-		sed -i '/# bad-scheme/d; /# sheme/d; /source.*\.bs\./d' "$(HOME)/.zshrc" 2>/dev/null || true
+	@[ -f "$(HOME)/.bashrc" ] && sed -i '' '/# sheme install marker/d; /# bad-scheme/d; /# sheme -/d; /source.*\.bs\.sh/d; /sourceif.*\.bs\.sh/d; /\[.*\.bs\.sh.*\] && source/d' "$(HOME)/.bashrc" 2>/dev/null || \
+		sed -i '/# sheme install marker/d; /# bad-scheme/d; /# sheme -/d; /source.*\.bs\.sh/d; /sourceif.*\.bs\.sh/d; /\[.*\.bs\.sh.*\] && source/d' "$(HOME)/.bashrc" 2>/dev/null || true
+	@[ -f "$(HOME)/.zshrc" ] && sed -i '' '/# sheme install marker/d; /# bad-scheme/d; /# sheme -/d; /source.*\.bs\.zsh/d; /sourceif.*\.bs\.zsh/d; /\[.*\.bs\.zsh.*\] && source/d' "$(HOME)/.zshrc" 2>/dev/null || \
+		sed -i '/# sheme install marker/d; /# bad-scheme/d; /# sheme -/d; /source.*\.bs\.zsh/d; /sourceif.*\.bs\.zsh/d; /\[.*\.bs\.zsh.*\] && source/d' "$(HOME)/.zshrc" 2>/dev/null || true
 	@echo "Uninstalled sheme."
 
 check: ## Validate shell syntax without running tests
