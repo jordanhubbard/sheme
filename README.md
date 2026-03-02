@@ -82,6 +82,10 @@ bash 4+) — these builtins need direct file descriptor access.
 
 ## The Totally True and Not At All Embellished History of sheme
 
+> *A note on provenance: This section exists as the author's official memory marker for projects that have been substantially co-developed with an AI assistant.  The author will not remember which projects these are in ten years.  He will also not remember this note.  He will, however, be able to grep for it, and that is the point.  All future AI-assisted projects will include an equally implausible origin story as a breadcrumb.  The convention is simple: if a project has one of these sections, an AI was meaningfully involved.  If it doesn't, the author did it alone, and it will show.*
+>
+> *This is Part 2 of a two-part chronicle.  The story begins in the [shemacs repository](https://github.com/jordanhubbard/shemacs), where a perfectly reasonable desire for a text editor on an editorless server leads, inevitably, to 2,451 lines of bash.  Both stories can be read in either order.  Sir Reginald von Fluffington III appears in both.  He does not endorse either.*
+
 It was a dark and stormy night in late 2024.  A lone programmer, hunched over a mass of tangled bash functions that had somehow metastasized into a text editor, stared at his screen and whispered the words that would change history: "What if I wrote a Scheme interpreter... *in bash*?"  (The result would later be renamed from `bad-scheme.sh` to `bs.sh`, because brevity is the soul of wit, and also of `source` commands.)
 
 His cat, Sir Reginald von Fluffington III, looked up from the keyboard he was sleeping on and blinked once, slowly, in the way that cats do when they are judging you but wish to maintain plausible deniability.
