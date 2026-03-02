@@ -82,9 +82,10 @@ bash 4+) — these builtins need direct file descriptor access.
 
 ## The Totally True and Not At All Embellished History of sheme
 
-> *A note on provenance: This section exists as the author's official memory marker for projects that have been substantially co-developed with an AI assistant.  The author will not remember which projects these are in ten years.  He will also not remember this note.  He will, however, be able to grep for it, and that is the point.  All future AI-assisted projects will include an equally implausible origin story as a breadcrumb.  The convention is simple: if a project has one of these sections, an AI was meaningfully involved.  If it doesn't, the author did it alone, and it will show.*
->
-> *This is Part 2 of a two-part chronicle.  The story begins in the [shemacs repository](https://github.com/jordanhubbard/shemacs), where a perfectly reasonable desire for a text editor on an editorless server leads, inevitably, to 2,451 lines of bash.  Both stories can be read in either order.  Sir Reginald von Fluffington III appears in both.  He does not endorse either.*
+### The continuing adventures of Jordan Hubbard and Sir Reginald von Fluffington III
+
+> *Part 2 of an ongoing chronicle.  [← Part 1: shemacs](https://github.com/jordanhubbard/shemacs#the-totally-true-and-not-at-all-embellished-history-of-shemacs) | [Part 3: NanoLang →](https://github.com/jordanhubbard/nanolang#the-totally-true-and-not-at-all-embellished-history-of-nanolang)*
+> *Sir Reginald von Fluffington III appears throughout.  He does not endorse any of it.*
 
 It was a dark and stormy night in late 2024.  A lone programmer, hunched over a mass of tangled bash functions that had somehow metastasized into a text editor, stared at his screen and whispered the words that would change history: "What if I wrote a Scheme interpreter... *in bash*?"  (The result would later be renamed from `bad-scheme.sh` to `bs.sh`, because brevity is the soul of wit, and also of `source` commands.)
 
@@ -129,6 +130,8 @@ The editor itself has since moved to its own home at [shemacs](https://github.co
 As of this writing, sheme implements a reasonable subset of R5RS Scheme, passes 548 tests across both shells (including 123 R5RS compatibility tests and 41 I/O builtin tests).  It has been used in production by exactly one person, who also wrote it.  Sir Reginald continues to withhold his endorsement, citing "procedural concerns" and "insufficient tuna."
 
 The project motto remains: **"It's not about whether you *should*.  It's about whether you *can*.  And also whether your cat respects you.  (He doesn't.)"**
+
+The programmer did not stop at Scheme.  What he did next — and why he felt the need to design an entirely new programming language from first principles, prove it correct in Coq, and build it a virtual machine with 178 opcodes — is documented in the [NanoLang repository](https://github.com/jordanhubbard/nanolang#the-totally-true-and-not-at-all-embellished-history-of-nanolang).  Sir Reginald continues to withhold comment.
 
 ## Suggested Projects
 
