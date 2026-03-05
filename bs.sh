@@ -1257,8 +1257,13 @@ __bs_apply() {                        # proc [args...]
             __bs_ret="n:()" ;;
         'f:terminal-size')
             local _rows _cols
-            _rows=$(tput lines 2>/dev/null) || _rows=0
-            _cols=$(tput cols 2>/dev/null) || _cols=0
+            if [[ -n "$LINES" && -n "$COLUMNS" ]]; then
+                _rows="$LINES"
+                _cols="$COLUMNS"
+            else
+                _rows=$(tput lines 2>/dev/null) || _rows=0
+                _cols=$(tput cols 2>/dev/null) || _cols=0
+            fi
             if (( _rows <= 0 || _cols <= 0 )); then
                 local _sz
                 _sz=$(stty size 2>/dev/null) || _sz="0 0"
@@ -1558,4 +1563,3169 @@ bs-reset() {
 bs-eval() {
     bs "$1"
     printf '%s\n' "$__bs_last_display"
+}
+
+# ══════════════════════════════════════════════════════════════════════════════
+# AOT Compiler: Scheme → Bash
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# bs-compile <source> — transpile Scheme source to native bash code.
+# Output is a self-contained bash script (functions + global variable decls).
+#
+# Design:
+#   - Unboxed values: ints are bash ints, strings are bash strings, bools 0/1
+#   - Return convention: __r global for function results, $(( )) for arith
+#   - Name mangling: hyphen→_, ?→_p, !→_x, >→_to_, *→_star_
+#   - Vectors: bash indexed arrays
+#   - Lists: bash arrays (cons=prepend, car=[0], null?=length check)
+
+# ── Name mangling ────────────────────────────────────────────────────────────
+__bsc_mangle() {
+    local name="$1" r=""
+    local i c
+    for (( i=0; i<${#name}; i++ )); do
+        c="${name:$i:1}"
+        case "$c" in
+            '-') r+='_' ;;
+            '?') r+='_p' ;;
+            '!') r+='_x' ;;
+            '>') r+='_to_' ;;
+            '<') r+='_lt_' ;;
+            '*') r+='_star_' ;;
+            '/') r+='_sl_' ;;
+            '=') r+='_eq_' ;;
+            '+') r+='_plus_' ;;
+            '%') r+='_pct_' ;;
+            '@') r+='_at_' ;;
+            '#') r+='_hash_' ;;
+            '.') r+='_dot_' ;;
+            [a-zA-Z0-9_]) r+="$c" ;;
+            *) r+='_' ;;
+        esac
+    done
+    __bsc_ret="$r"
+}
+
+# ── Compiler globals ─────────────────────────────────────────────────────────
+declare -g __bsc_ret=""
+declare -g __bsc_out=""          # accumulated output
+declare -g __bsc_indent=""       # current indentation
+declare -gA __bsc_globals=()     # set of global variable names (mangled)
+declare -gA __bsc_funcs=()       # set of function names (mangled)
+declare -gA __bsc_int_vars=()    # variables known to be integer-typed
+declare -gA __bsc_pair_vars=()   # variables known to be 2-element pairs
+declare -gA __bsc_arr_vars=()    # variables known to be arrays (vectors/lists)
+declare -g  __bsc_in_func=0      # 1 when inside a function definition
+declare -g __bsc_list_n=0        # counter for temp list variables
+
+# ── Output helpers ───────────────────────────────────────────────────────────
+__bsc_line() { __bsc_out+="${__bsc_indent}$1"$'\n'; }
+# Emit "local ..." or "declare ..." depending on scope
+__bsc_local() { local kw="local"; (( __bsc_in_func )) || kw="declare"; __bsc_line "$kw $1"; }
+__bsc_push_indent() { __bsc_indent+="    "; }
+__bsc_pop_indent() { __bsc_indent="${__bsc_indent%    }"; }
+
+# ── AST walking helpers ──────────────────────────────────────────────────────
+# List a cons-list into a bash array __bsc_list_result
+__bsc_list_to_array() {
+    local cur="$1"
+    __bsc_list_result=()
+    while [[ "$cur" == p:* ]]; do
+        __bsc_list_result+=("${__bs_car[$cur]}")
+        cur="${__bs_cdr[$cur]}"
+    done
+}
+
+# Get length of a cons-list
+__bsc_list_length() {
+    local cur="$1" n=0
+    while [[ "$cur" == p:* ]]; do (( n++ )); cur="${__bs_cdr[$cur]}"; done
+    __bsc_ret="$n"
+}
+
+# ── Emit expression as bash string (returns result in __bsc_ret) ─────────────
+# mode: "stmt" = statement context, "expr" = need value, "test" = boolean test
+__bsc_emit_expr() {
+    local expr="$1" mode="${2:-expr}"
+    __bsc_is_pair=0
+
+    case "${expr:0:2}" in
+        'i:')  # integer literal
+            __bsc_ret="${expr:2}"
+            return 0 ;;
+        'b:')  # boolean literal
+            if [[ "$expr" == 'b:#t' ]]; then __bsc_ret="1"
+            else __bsc_ret="0"; fi
+            return 0 ;;
+        's:')  # string literal — needs quoting
+            local s="${expr:2}"
+            if [[ "$s" == *$'\n'* || "$s" == *$'\t'* ]]; then
+                # Use $'...' quoting for strings with newlines/tabs
+                s="${s//\\/\\\\}"
+                local _sq="'" _bsq="\\'"
+                s="${s//$_sq/$_bsq}"
+                s="${s//$'\n'/\\n}"
+                s="${s//$'\t'/\\t}"
+                __bsc_ret="\$'${s}'"
+            else
+                # Regular double-quoted string
+                s="${s//\\/\\\\}"
+                s="${s//\"/\\\"}"
+                s="${s//\$/\\\$}"
+                s="${s//\`/\\\`}"
+                __bsc_ret="\"${s}\""
+            fi
+            return 0 ;;
+        'c:')  # character literal
+            local ch="${expr:2}"
+            case "$ch" in
+                $'\n') __bsc_ret="\$'\\n'" ;;
+                $'\t') __bsc_ret="\$'\\t'" ;;
+                ' ')   __bsc_ret="\" \"" ;;
+                \\)    __bsc_ret="\"\\\\\""  ;;
+                '"')   __bsc_ret="'\"'" ;;
+                \$)    __bsc_ret="'\$'" ;;
+                \`)    __bsc_ret="'\`'" ;;
+                *)     __bsc_ret="\"${ch}\"" ;;
+            esac
+            return 0 ;;
+        'n:')  # null / empty list
+            __bsc_ret='()'
+            return 0 ;;
+        'y:')  # variable reference
+            local vname="${expr:2}"
+            __bsc_mangle "$vname"
+            local mangled="$__bsc_ret"
+            if [[ "$mode" == "test" ]]; then
+                # In test context, check truthiness
+                if [[ -n "${__bsc_int_vars[$mangled]:-}" ]]; then
+                    __bsc_ret="(( $mangled ))"
+                else
+                    __bsc_ret="[[ -n \"\$$mangled\" && \"\$$mangled\" != \"0\" ]]"
+                fi
+            else
+                __bsc_ret="\$$mangled"
+            fi
+            return 0 ;;
+        'p:')  # list — function call or special form
+            ;;
+        *)
+            __bsc_ret="\"\"  # unknown: $expr"
+            return 0 ;;
+    esac
+
+    # ── List: special form or function call ──
+    local head="${__bs_car[$expr]}"
+    local rest="${__bs_cdr[$expr]}"
+
+    case "$head" in
+
+        # ── quote ─────────────────────────────────────────────────────────
+        'y:quote')
+            __bsc_emit_quote "${__bs_car[$rest]}"
+            return 0 ;;
+
+        # ── if ────────────────────────────────────────────────────────────
+        'y:if')
+            __bsc_emit_if "$rest" "$mode"
+            return 0 ;;
+
+        # ── when ──────────────────────────────────────────────────────────
+        'y:when')
+            __bsc_emit_when "$rest" "$mode"
+            return 0 ;;
+
+        # ── unless ────────────────────────────────────────────────────────
+        'y:unless')
+            __bsc_emit_unless "$rest" "$mode"
+            return 0 ;;
+
+        # ── begin ─────────────────────────────────────────────────────────
+        'y:begin')
+            __bsc_emit_begin "$rest" "$mode"
+            return 0 ;;
+
+        # ── define ────────────────────────────────────────────────────────
+        'y:define')
+            __bsc_emit_define "$rest"
+            return 0 ;;
+
+        # ── set! ──────────────────────────────────────────────────────────
+        'y:set!')
+            __bsc_emit_set "$rest"
+            return 0 ;;
+
+        # ── let / let* ────────────────────────────────────────────────────
+        'y:let')
+            __bsc_emit_let "$rest" "$mode"
+            return 0 ;;
+        'y:let*')
+            __bsc_emit_letstar "$rest" "$mode"
+            return 0 ;;
+        'y:letrec'|'y:letrec*')
+            __bsc_emit_letstar "$rest" "$mode"
+            return 0 ;;
+
+        # ── cond ──────────────────────────────────────────────────────────
+        'y:cond')
+            __bsc_emit_cond "$rest" "$mode"
+            return 0 ;;
+
+        # ── case ──────────────────────────────────────────────────────────
+        'y:case')
+            __bsc_emit_case "$rest" "$mode"
+            return 0 ;;
+
+        # ── and / or / not ────────────────────────────────────────────────
+        'y:and')
+            __bsc_emit_and "$rest" "$mode"
+            return 0 ;;
+        'y:or')
+            __bsc_emit_or "$rest" "$mode"
+            return 0 ;;
+        'y:not')
+            __bsc_emit_not "$rest" "$mode"
+            return 0 ;;
+
+        # ── do ────────────────────────────────────────────────────────────
+        'y:do')
+            __bsc_emit_do "$rest" "$mode"
+            return 0 ;;
+
+        # ── lambda ────────────────────────────────────────────────────────
+        'y:lambda')
+            __bsc_emit_lambda "$rest"
+            return 0 ;;
+
+        # ── apply ─────────────────────────────────────────────────────────
+        'y:apply')
+            __bsc_emit_apply "$rest" "$mode"
+            return 0 ;;
+
+        # ── Builtin operations — dispatch to specialized emitters ─────────
+        'y:+'|'y:-'|'y:*'|'y:/'|'y:quotient'|'y:remainder'|'y:modulo'| \
+        'y:expt'|'y:abs'|'y:max'|'y:min')
+            __bsc_emit_arith "$head" "$rest" "$mode"
+            return 0 ;;
+
+        'y:='|'y:<'|'y:>'|'y:<='|'y:>='|'y:zero?'|'y:positive?'|'y:negative?'| \
+        'y:even?'|'y:odd?')
+            __bsc_emit_num_cmp "$head" "$rest" "$mode"
+            return 0 ;;
+
+        'y:equal?'|'y:eq?'|'y:eqv?'|'y:string=?'|'y:string<?'|'y:string>?'| \
+        'y:string<=?'|'y:string>=?'|'y:char=?'|'y:char<?'|'y:char>=?')
+            __bsc_emit_str_cmp "$head" "$rest" "$mode"
+            return 0 ;;
+
+        'y:string-append'|'y:string-length'|'y:substring'|'y:string-ref'| \
+        'y:string'|'y:make-string'|'y:string-copy'|'y:string-upcase'| \
+        'y:string-downcase'|'y:number->string'|'y:string->number'| \
+        'y:string->symbol'|'y:symbol->string'|'y:string-repeat')
+            __bsc_emit_string_op "$head" "$rest" "$mode"
+            return 0 ;;
+
+        'y:char->integer'|'y:integer->char'|'y:char-alphabetic?'| \
+        'y:char-numeric?'|'y:char-word?')
+            __bsc_emit_char_op "$head" "$rest" "$mode"
+            return 0 ;;
+
+        'y:not'|'y:boolean?'|'y:number?'|'y:string?'|'y:symbol?'| \
+        'y:pair?'|'y:null?'|'y:list?'|'y:procedure?'|'y:vector?'|'y:char?')
+            __bsc_emit_type_pred "$head" "$rest" "$mode"
+            return 0 ;;
+
+        'y:vector-ref'|'y:vector-set!'|'y:vector-length'|'y:make-vector'| \
+        'y:vector'|'y:vector-ref-safe'|'y:vector->list'|'y:list->vector'| \
+        'y:vector-insert'|'y:vector-remove')
+            __bsc_emit_vector_op "$head" "$rest" "$mode"
+            return 0 ;;
+
+        'y:cons'|'y:car'|'y:cdr'|'y:list'|'y:length'|'y:append'|'y:reverse'| \
+        'y:list-ref'|'y:list-tail'|'y:null?')
+            __bsc_emit_list_op "$head" "$rest" "$mode"
+            return 0 ;;
+
+        'y:map'|'y:for-each'|'y:filter')
+            __bsc_emit_higher_order "$head" "$rest" "$mode"
+            return 0 ;;
+
+        'y:display'|'y:write'|'y:newline'|'y:write-stdout'|'y:read-byte'| \
+        'y:read-byte-timeout'|'y:read-line')
+            __bsc_emit_io "$head" "$rest" "$mode"
+            return 0 ;;
+
+        'y:terminal-size'|'y:terminal-raw!'|'y:terminal-restore!'| \
+        'y:terminal-suspend!')
+            __bsc_emit_terminal "$head" "$rest" "$mode"
+            return 0 ;;
+
+        'y:file-read'|'y:file-write'|'y:file-write-atomic'|'y:file-glob'| \
+        'y:file-directory?')
+            __bsc_emit_file_op "$head" "$rest" "$mode"
+            return 0 ;;
+
+        'y:shell-capture'|'y:shell-exec')
+            __bsc_emit_shell_op "$head" "$rest" "$mode"
+            return 0 ;;
+
+        'y:eval-string')
+            __bsc_emit_eval_string "$rest" "$mode"
+            return 0 ;;
+
+        'y:error')
+            __bsc_emit_error "$rest"
+            return 0 ;;
+
+        # ── User-defined function call ────────────────────────────────────
+        'y:'*)
+            __bsc_emit_call "$head" "$rest" "$mode"
+            return 0 ;;
+    esac
+
+    # Fallback: emit as comment
+    __bsc_ret="# unhandled: $head"
+    __bsc_line "$__bsc_ret"
+}
+
+# ── Quote ─────────────────────────────────────────────────────────────────────
+__bsc_emit_quote() {
+    local val="$1"
+    case "${val:0:2}" in
+        'i:') __bsc_ret="${val:2}" ;;
+        's:')
+            local s="${val:2}"
+            s="${s//\\/\\\\}"; s="${s//\"/\\\"}"; s="${s//\$/\\\$}"; s="${s//\`/\\\`}"
+            __bsc_ret="\"${s}\"" ;;
+        'b:') [[ "$val" == 'b:#t' ]] && __bsc_ret="1" || __bsc_ret="0" ;;
+        'n:') __bsc_ret="()" ;;  # '() → empty array
+        'c:') __bsc_ret="\"${val:2}\"" ;;
+        'p:')
+            # quoted list → bash array literal
+            local items="" cur="$val"
+            while [[ "$cur" == p:* ]]; do
+                __bsc_emit_quote "${__bs_car[$cur]}"
+                [[ -n "$items" ]] && items+=" "
+                items+="$__bsc_ret"
+                cur="${__bs_cdr[$cur]}"
+            done
+            __bsc_ret="($items)" ;;
+        *) __bsc_ret="\"\"" ;;
+    esac
+}
+
+# ── If ────────────────────────────────────────────────────────────────────────
+__bsc_emit_if() {
+    local rest="$1" mode="$2"
+    local test_e="${__bs_car[$rest]}"
+    local branches="${__bs_cdr[$rest]}"
+    local then_e="${__bs_car[$branches]}"
+    local else_rest="${__bs_cdr[$branches]}"
+
+    local test_str
+    __bsc_emit_test "$test_e"
+    test_str="$__bsc_ret"
+
+    # Enable return context if this if is used as expression (mode=expr) or already in rc
+    local _save_rc="${__bsc_return_ctx:-}"
+    [[ "$mode" == "expr" ]] && __bsc_return_ctx=1
+
+    __bsc_line "if $test_str; then"
+    __bsc_push_indent
+    __bsc_emit_expr "$then_e" "stmt"
+    if [[ -n "$__bsc_ret" && "$__bsc_ret" != "# "* ]]; then
+        if [[ "${__bsc_return_ctx:-}" == 1 ]]; then
+            [[ "$__bsc_ret" != "\$__r" ]] && __bsc_line "__r=$__bsc_ret"
+        else
+            __bsc_line "$__bsc_ret"
+        fi
+    fi
+    __bsc_pop_indent
+
+    if [[ "$else_rest" != 'n:()' ]]; then
+        local else_e="${__bs_car[$else_rest]}"
+        # Check for elif pattern: else branch is another if
+        if [[ "${else_e:0:2}" == "p:" && "${__bs_car[$else_e]}" == "y:if" ]]; then
+            __bsc_indent="${__bsc_indent}" __bsc_emit_elif "${__bs_cdr[$else_e]}" "$mode"
+        else
+            __bsc_line "else"
+            __bsc_push_indent
+            __bsc_emit_expr "$else_e" "stmt"
+            if [[ -n "$__bsc_ret" && "$__bsc_ret" != "# "* ]]; then
+                if [[ "${__bsc_return_ctx:-}" == 1 && "$__bsc_ret" != "\$__r" ]]; then
+                    __bsc_line "__r=$__bsc_ret"
+                else
+                    __bsc_line "$__bsc_ret"
+                fi
+            fi
+            __bsc_pop_indent
+        fi
+    fi
+    __bsc_line "fi"
+    __bsc_return_ctx="$_save_rc"
+    # When in expr mode, the result is in __r
+    if [[ "$mode" == "expr" ]]; then
+        __bsc_ret="\$__r"
+    else
+        __bsc_ret=""
+    fi
+}
+
+__bsc_emit_elif() {
+    local rest="$1" mode="$2"
+    local test_e="${__bs_car[$rest]}"
+    local branches="${__bs_cdr[$rest]}"
+    local then_e="${__bs_car[$branches]}"
+    local else_rest="${__bs_cdr[$branches]}"
+
+    local _pre_len=${#__bsc_out}
+    __bsc_emit_test "$test_e"
+    local _test_expr="$__bsc_ret"
+    local _has_preamble=0
+    local _preamble=""
+    if (( ${#__bsc_out} > _pre_len )); then
+        _preamble="${__bsc_out:$_pre_len}"
+        __bsc_out="${__bsc_out:0:$_pre_len}"
+        _has_preamble=1
+    fi
+    if (( _has_preamble )); then
+        # Preamble between elif and previous body is invalid bash;
+        # use else + nested if to place preamble correctly
+        __bsc_line "else"
+        __bsc_push_indent
+        __bsc_out+="$_preamble"
+        __bsc_line "if $_test_expr; then"
+    else
+        __bsc_line "elif $_test_expr; then"
+    fi
+    __bsc_push_indent
+    __bsc_emit_expr "$then_e" "stmt"
+    if [[ -n "$__bsc_ret" && "$__bsc_ret" != "# "* ]]; then
+        if [[ "${__bsc_return_ctx:-}" == 1 ]]; then
+            [[ "$__bsc_ret" != "\$__r" ]] && __bsc_line "__r=$__bsc_ret"
+        else
+            __bsc_line "$__bsc_ret"
+        fi
+    fi
+    __bsc_pop_indent
+
+    if [[ "$else_rest" != 'n:()' ]]; then
+        local else_e="${__bs_car[$else_rest]}"
+        if [[ "${else_e:0:2}" == "p:" && "${__bs_car[$else_e]}" == "y:if" ]]; then
+            __bsc_emit_elif "${__bs_cdr[$else_e]}" "$mode"
+        else
+            __bsc_line "else"
+            __bsc_push_indent
+            __bsc_emit_expr "$else_e" "stmt"
+            if [[ -n "$__bsc_ret" && "$__bsc_ret" != "# "* ]]; then
+                if [[ "${__bsc_return_ctx:-}" == 1 && "$__bsc_ret" != "\$__r" ]]; then
+                    __bsc_line "__r=$__bsc_ret"
+                else
+                    __bsc_line "$__bsc_ret"
+                fi
+            fi
+            __bsc_pop_indent
+        fi
+    fi
+    # Close extra nesting if preamble was present
+    if (( _has_preamble )); then
+        __bsc_line "fi"
+        __bsc_pop_indent
+    fi
+}
+
+# ── Test expression: emit as bash conditional ─────────────────────────────────
+__bsc_emit_test() {
+    local expr="$1"
+
+    # Simple literals
+    case "${expr:0:2}" in
+        'b:')
+            if [[ "$expr" == 'b:#t' ]]; then __bsc_ret="true"
+            else __bsc_ret="false"; fi
+            return 0 ;;
+        'y:')
+            __bsc_mangle "${expr:2}"
+            local m="$__bsc_ret"
+            if [[ -n "${__bsc_int_vars[$m]:-}" ]]; then
+                __bsc_ret="(( $m ))"
+            else
+                __bsc_ret="[[ -n \"\$$m\" && \"\$$m\" != \"0\" ]]"
+            fi
+            return 0 ;;
+    esac
+
+    # Not a list? Just evaluate
+    [[ "${expr:0:2}" != "p:" ]] && {
+        __bsc_emit_expr "$expr" "expr"
+        local _uq="$(__bsc_unquote "$__bsc_ret")"
+        __bsc_ret="[[ -n \"$_uq\" && \"$_uq\" != \"0\" ]]"
+        return 0
+    }
+
+    local head="${__bs_car[$expr]}"
+    local rest="${__bs_cdr[$expr]}"
+
+    case "$head" in
+        # Numeric comparisons
+        'y:<'|'y:>'|'y:<='|'y:>='|'y:=')
+            local a_e="${__bs_car[$rest]}" b_e="${__bs_car[${__bs_cdr[$rest]}]}"
+            __bsc_emit_arith_val "$a_e"; local a="$__bsc_ret"
+            __bsc_emit_arith_val "$b_e"; local b="$__bsc_ret"
+            local op="${head:2}"
+            [[ "$op" == "=" ]] && op="=="
+            __bsc_ret="(( $a $op $b ))"
+            return 0 ;;
+
+        'y:zero?')
+            __bsc_emit_arith_val "${__bs_car[$rest]}"; __bsc_ret="(( $__bsc_ret == 0 ))"; return 0 ;;
+        'y:positive?')
+            __bsc_emit_arith_val "${__bs_car[$rest]}"; __bsc_ret="(( $__bsc_ret > 0 ))"; return 0 ;;
+        'y:negative?')
+            __bsc_emit_arith_val "${__bs_car[$rest]}"; __bsc_ret="(( $__bsc_ret < 0 ))"; return 0 ;;
+        'y:even?')
+            __bsc_emit_arith_val "${__bs_car[$rest]}"; __bsc_ret="(( $__bsc_ret % 2 == 0 ))"; return 0 ;;
+        'y:odd?')
+            __bsc_emit_arith_val "${__bs_car[$rest]}"; __bsc_ret="(( $__bsc_ret % 2 != 0 ))"; return 0 ;;
+
+        # String/equal comparisons
+        'y:equal?'|'y:eq?'|'y:eqv?'|'y:string=?')
+            local a_e="${__bs_car[$rest]}" b_e="${__bs_car[${__bs_cdr[$rest]}]}"
+            __bsc_emit_expr "$a_e" "expr"; local a="$(__bsc_unquote "$__bsc_ret")"
+            __bsc_emit_expr "$b_e" "expr"; local b="$(__bsc_unquote "$__bsc_ret")"
+            __bsc_ret="[[ \"$a\" == \"$b\" ]]"
+            return 0 ;;
+
+        'y:string<?')
+            local a_e="${__bs_car[$rest]}" b_e="${__bs_car[${__bs_cdr[$rest]}]}"
+            __bsc_emit_expr "$a_e" "expr"; local a="$(__bsc_unquote "$__bsc_ret")"
+            __bsc_emit_expr "$b_e" "expr"; local b="$(__bsc_unquote "$__bsc_ret")"
+            __bsc_ret="[[ \"$a\" < \"$b\" ]]"
+            return 0 ;;
+        'y:string>?')
+            local a_e="${__bs_car[$rest]}" b_e="${__bs_car[${__bs_cdr[$rest]}]}"
+            __bsc_emit_expr "$a_e" "expr"; local a="$(__bsc_unquote "$__bsc_ret")"
+            __bsc_emit_expr "$b_e" "expr"; local b="$(__bsc_unquote "$__bsc_ret")"
+            __bsc_ret="[[ \"$a\" > \"$b\" ]]"
+            return 0 ;;
+
+        # char comparisons
+        'y:char=?')
+            local a_e="${__bs_car[$rest]}" b_e="${__bs_car[${__bs_cdr[$rest]}]}"
+            __bsc_emit_expr "$a_e" "expr"; local a="$(__bsc_unquote "$__bsc_ret")"
+            __bsc_emit_expr "$b_e" "expr"; local b="$(__bsc_unquote "$__bsc_ret")"
+            __bsc_ret="[[ \"$a\" == \"$b\" ]]"
+            return 0 ;;
+        'y:char<?')
+            local a_e="${__bs_car[$rest]}" b_e="${__bs_car[${__bs_cdr[$rest]}]}"
+            __bsc_emit_expr "$a_e" "expr"; local a="$(__bsc_unquote "$__bsc_ret")"
+            __bsc_emit_expr "$b_e" "expr"; local b="$(__bsc_unquote "$__bsc_ret")"
+            __bsc_ret="[[ \"$a\" < \"$b\" ]]"
+            return 0 ;;
+        'y:char>=?')
+            local a_e="${__bs_car[$rest]}" b_e="${__bs_car[${__bs_cdr[$rest]}]}"
+            __bsc_emit_expr "$a_e" "expr"; local a="$(__bsc_unquote "$__bsc_ret")"
+            __bsc_emit_expr "$b_e" "expr"; local b="$(__bsc_unquote "$__bsc_ret")"
+            __bsc_ret="[[ ! \"$a\" < \"$b\" ]]"
+            return 0 ;;
+
+        # Boolean ops
+        'y:and')
+            __bsc_list_to_array "$rest"
+            local parts=()
+            for elem in "${__bsc_list_result[@]}"; do
+                __bsc_emit_test "$elem"
+                parts+=("$__bsc_ret")
+            done
+            local joined=""
+            for (( _k=0; _k<${#parts[@]}; _k++ )); do
+                [[ -n "$joined" ]] && joined+=" && "
+                joined+="${parts[$_k]}"
+            done
+            __bsc_ret="$joined"
+            return 0 ;;
+
+        'y:or')
+            __bsc_list_to_array "$rest"
+            local parts=()
+            for elem in "${__bsc_list_result[@]}"; do
+                __bsc_emit_test "$elem"
+                parts+=("$__bsc_ret")
+            done
+            local joined=""
+            for (( _k=0; _k<${#parts[@]}; _k++ )); do
+                [[ -n "$joined" ]] && joined+=" || "
+                joined+="${parts[$_k]}"
+            done
+            __bsc_ret="$joined"
+            return 0 ;;
+
+        'y:not')
+            __bsc_emit_test "${__bs_car[$rest]}"
+            __bsc_ret="! $__bsc_ret"
+            return 0 ;;
+
+        # Type predicates in test context
+        'y:null?')
+            __bsc_emit_expr "${__bs_car[$rest]}" "expr"
+            __bsc_ret="[[ \${#$(__bsc_strip_dollar "$__bsc_ret")[@]} -eq 0 ]]"
+            return 0 ;;
+        'y:pair?')
+            __bsc_emit_expr "${__bs_car[$rest]}" "expr"
+            __bsc_ret="[[ \${#$(__bsc_strip_dollar "$__bsc_ret")[@]} -gt 0 ]]"
+            return 0 ;;
+
+        # char predicates
+        'y:char-alphabetic?')
+            __bsc_emit_expr "${__bs_car[$rest]}" "expr"
+            local v="$(__bsc_unquote "$__bsc_ret")"
+            __bsc_ret="[[ \"$v\" =~ [a-zA-Z] ]]"
+            return 0 ;;
+        'y:char-numeric?')
+            __bsc_emit_expr "${__bs_car[$rest]}" "expr"
+            local v="$(__bsc_unquote "$__bsc_ret")"
+            __bsc_ret="[[ \"$v\" =~ [0-9] ]]"
+            return 0 ;;
+        'y:char-word?')
+            __bsc_emit_expr "${__bs_car[$rest]}" "expr"
+            local v="$(__bsc_unquote "$__bsc_ret")"
+            __bsc_ret="[[ \"$v\" =~ [a-zA-Z0-9_] ]]"
+            return 0 ;;
+
+        # Negated version: (not (equal? ...))
+        # Fall through to general case
+    esac
+
+    # General: evaluate expression and test truthiness
+    __bsc_emit_expr "$expr" "expr"
+    local val="$__bsc_ret"
+    # If it's already a (( )) or [[ ]] expression, use it directly
+    if [[ "$val" == "(("* || "$val" == "[["* ]]; then
+        __bsc_ret="$val"
+    else
+        local _uq="$(__bsc_unquote "$val")"
+        __bsc_ret="[[ -n \"$_uq\" && \"$_uq\" != \"0\" ]]"
+    fi
+}
+
+# Strip leading $ from variable reference
+__bsc_strip_dollar() {
+    local v="$1"
+    [[ "$v" == \$* ]] && v="${v:1}"
+    printf '%s' "$v"
+}
+
+# Strip outer quotes for embedding in [[ ]] contexts
+# "foo" → foo, "$var" → $var, but $(( )) stays as-is
+__bsc_unquote() {
+    local v="$1"
+    if [[ "$v" == '"'*'"' ]]; then
+        printf '%s' "${v:1:${#v}-2}"
+    else
+        printf '%s' "$v"
+    fi
+}
+
+# Get a bare variable name for an array expression.
+# If __bsc_ret is an array literal like (...), materialize to a temp var.
+# Otherwise strip $ and return the variable name.
+# Sets __bsc_arr_name to the usable variable name.
+__bsc_ensure_arr_var() {
+    local v="$__bsc_ret"
+    if [[ "$v" == "("* ]]; then
+        (( __bsc_list_n = ${__bsc_list_n:-0} + 1 )) || true
+        __bsc_arr_name="__tmp_arr${__bsc_list_n}"
+        __bsc_line "local -a ${__bsc_arr_name}=${v}"
+    else
+        __bsc_arr_name="$(__bsc_strip_dollar "$v")"
+    fi
+}
+
+# Emit arithmetic value (for use inside $(( )) or (( )) )
+__bsc_emit_arith_val() {
+    local expr="$1"
+    case "${expr:0:2}" in
+        'i:') __bsc_ret="${expr:2}"; return 0 ;;
+        'y:')
+            __bsc_mangle "${expr:2}"; return 0 ;;  # bare name in arith context
+        'p:')
+            local head="${__bs_car[$expr]}"
+            case "$head" in
+                'y:+'|'y:-'|'y:*'|'y:/'|'y:quotient'|'y:remainder'|'y:modulo')
+                    __bsc_emit_arith_inline "$expr"
+                    return 0 ;;
+                'y:string-length')
+                    local arg="${__bs_car[${__bs_cdr[$expr]}]}"
+                    __bsc_emit_expr "$arg" "expr"
+                    local v="$__bsc_ret"
+                    if [[ "$v" == '$'[a-zA-Z_]* && "$v" != *'['* && "$v" != *'{'* && "$v" != *':'* ]]; then
+                        __bsc_ret="\${#${v:1}}"
+                    else
+                        __bsc_local "__sl=$v"
+                        __bsc_ret="\${#__sl}"
+                    fi
+                    return 0 ;;
+                'y:vector-length')
+                    local arg="${__bs_car[${__bs_cdr[$expr]}]}"
+                    __bsc_emit_expr "$arg" "expr"
+                    local v="$(__bsc_strip_dollar "$__bsc_ret")"
+                    __bsc_ret="\${#${v}[@]}"
+                    return 0 ;;
+                *)
+                    __bsc_emit_expr "$expr" "expr"
+                    return 0 ;;
+            esac ;;
+        *) __bsc_emit_expr "$expr" "expr"; return 0 ;;
+    esac
+}
+
+# Emit inline arithmetic (no side effects, nestable)
+__bsc_emit_arith_inline() {
+    local expr="$1"
+    local head="${__bs_car[$expr]}"
+    local rest="${__bs_cdr[$expr]}"
+    local op="${head:2}"
+
+    __bsc_list_to_array "$rest"
+    local -a vals=()
+    for elem in "${__bsc_list_result[@]}"; do
+        __bsc_emit_arith_val "$elem"
+        vals+=("$__bsc_ret")
+    done
+
+    case "$op" in
+        '+')
+            if (( ${#vals[@]} == 0 )); then __bsc_ret="0"
+            elif (( ${#vals[@]} == 1 )); then __bsc_ret="${vals[0]}"
+            else
+                local r="${vals[0]}"
+                for (( _k=1; _k<${#vals[@]}; _k++ )); do r+=" + ${vals[$_k]}"; done
+                __bsc_ret="$r"
+            fi ;;
+        '-')
+            if (( ${#vals[@]} == 1 )); then __bsc_ret="-(${vals[0]})"
+            else
+                local r="${vals[0]}"
+                for (( _k=1; _k<${#vals[@]}; _k++ )); do r+=" - ${vals[$_k]}"; done
+                __bsc_ret="$r"
+            fi ;;
+        '*')
+            if (( ${#vals[@]} == 0 )); then __bsc_ret="1"
+            elif (( ${#vals[@]} == 1 )); then __bsc_ret="${vals[0]}"
+            else
+                local r="${vals[0]}"
+                for (( _k=1; _k<${#vals[@]}; _k++ )); do r+=" * ${vals[$_k]}"; done
+                __bsc_ret="$r"
+            fi ;;
+        '/')
+            local r="${vals[0]}"
+            for (( _k=1; _k<${#vals[@]}; _k++ )); do r+=" / ${vals[$_k]}"; done
+            __bsc_ret="$r" ;;
+        'quotient')
+            __bsc_ret="${vals[0]} / ${vals[1]}" ;;
+        'remainder'|'modulo')
+            __bsc_ret="${vals[0]} % ${vals[1]}" ;;
+        *) __bsc_ret="${vals[0]}" ;;
+    esac
+}
+
+# ── When / Unless ─────────────────────────────────────────────────────────────
+__bsc_emit_when() {
+    local rest="$1" mode="$2"
+    local test_e="${__bs_car[$rest]}"
+    local body="${__bs_cdr[$rest]}"
+
+    __bsc_emit_test "$test_e"
+    __bsc_line "if $__bsc_ret; then"
+    __bsc_push_indent
+    __bsc_emit_body "$body"
+    __bsc_pop_indent
+    __bsc_line "fi"
+    __bsc_ret=""
+}
+
+__bsc_emit_unless() {
+    local rest="$1" mode="$2"
+    local test_e="${__bs_car[$rest]}"
+    local body="${__bs_cdr[$rest]}"
+
+    __bsc_emit_test "$test_e"
+    __bsc_line "if ! $__bsc_ret; then"
+    __bsc_push_indent
+    __bsc_emit_body "$body"
+    __bsc_pop_indent
+    __bsc_line "fi"
+    __bsc_ret=""
+}
+
+# ── Begin ─────────────────────────────────────────────────────────────────────
+__bsc_emit_begin() {
+    local rest="$1" mode="$2"
+    if [[ "${__bsc_return_ctx:-}" == 1 ]]; then
+        __bsc_emit_body_rc "$rest"
+    else
+        __bsc_emit_body "$rest"
+    fi
+    __bsc_ret=""
+}
+
+# ── Emit a local variable binding ─────────────────────────────────────────────
+# Handles test expressions ((..)) and [[..]] by converting to 0/1 values
+__bsc_emit_local_binding() {
+    local mvar="$1" ival="$2"
+    local _kw="local"
+    (( __bsc_in_func )) || _kw="declare"
+    if [[ "$ival" =~ ^-?[0-9]+$ ]] || [[ "$ival" == '$(('* ]]; then
+        __bsc_int_vars[$mvar]=1
+        __bsc_line "$_kw -i $mvar=$ival"
+    elif [[ "$ival" == "(("* || "$ival" == "[["* || "$ival" == "! "* ]]; then
+        # Test expression — convert to 0/1 value
+        __bsc_int_vars[$mvar]=1
+        __bsc_line "$_kw -i $mvar=0"
+        __bsc_line "$ival && $mvar=1"
+    elif [[ "$ival" == '("'* || "$ival" == '($'* || "$ival" == "()" ]]; then
+        # Array value
+        __bsc_arr_vars[$mvar]=1
+        if [[ "${__bsc_is_pair:-}" == 1 ]]; then
+            __bsc_pair_vars[$mvar]=1
+            __bsc_is_pair=0
+        fi
+        __bsc_line "$_kw -a $mvar=$ival"
+    else
+        __bsc_line "$_kw $mvar=$ival"
+    fi
+}
+
+# ── Body: emit a sequence of expressions ──────────────────────────────────────
+__bsc_emit_body() {
+    local exprs="$1"
+    while [[ "$exprs" != 'n:()' && -n "$exprs" ]]; do
+        local e="${__bs_car[$exprs]}"
+        __bsc_emit_expr "$e" "stmt"
+        [[ -n "$__bsc_ret" && "$__bsc_ret" != "" ]] && __bsc_line "$__bsc_ret"
+        exprs="${__bs_cdr[$exprs]}"
+    done
+}
+
+# Body emitter that respects return context for last expression
+__bsc_emit_body_rc() {
+    local exprs="$1"
+    while [[ "$exprs" != 'n:()' && -n "$exprs" ]]; do
+        local e="${__bs_car[$exprs]}"
+        local next="${__bs_cdr[$exprs]}"
+        if [[ "$next" == 'n:()' && "${__bsc_return_ctx:-}" == 1 ]]; then
+            # Last expression in return context
+            __bsc_emit_expr "$e" "stmt"
+            if [[ -n "$__bsc_ret" && "$__bsc_ret" != "# "* ]]; then
+                if [[ "$__bsc_ret" == "\$__r" ]]; then
+                    :
+                else
+                    __bsc_line "__r=$__bsc_ret"
+                fi
+            fi
+        else
+            __bsc_emit_expr "$e" "stmt"
+            [[ -n "$__bsc_ret" && "$__bsc_ret" != "" ]] && __bsc_line "$__bsc_ret"
+        fi
+        exprs="$next"
+    done
+}
+
+# ── Define ────────────────────────────────────────────────────────────────────
+__bsc_emit_define() {
+    local rest="$1"
+    local name_part="${__bs_car[$rest]}"
+    local body_rest="${__bs_cdr[$rest]}"
+
+    if [[ "$name_part" == y:* ]]; then
+        # Variable define: (define var expr)
+        local vname="${name_part:2}"
+        __bsc_mangle "$vname"
+        local mangled="$__bsc_ret"
+        __bsc_globals[$mangled]=1
+
+        local init_e="${__bs_car[$body_rest]}"
+        __bsc_emit_expr "$init_e" "expr"
+        local val="$__bsc_ret"
+
+        # Detect integer and array variables
+        if [[ "$val" =~ ^-?[0-9]+$ ]] || [[ "$val" == '$(('* ]]; then
+            __bsc_int_vars[$mangled]=1
+            __bsc_line "$mangled=$val"
+        elif [[ "$val" == '("'* || "$val" == '($'* || "$val" == "()" ]]; then
+            __bsc_arr_vars[$mangled]=1
+            __bsc_line "$mangled=$val"
+        else
+            __bsc_line "$mangled=$val"
+        fi
+        __bsc_ret=""
+    else
+        # Function define: (define (fname params...) body...)
+        local fname="${__bs_car[$name_part]}"
+        local params="${__bs_cdr[$name_part]}"
+        __bsc_mangle "${fname:2}"
+        local mangled="$__bsc_ret"
+
+        # Skip if already emitted as a runtime helper
+        if [[ -n "${__bsc_funcs[$mangled]:-}" ]]; then
+            __bsc_ret=""
+            return 0
+        fi
+        __bsc_funcs[$mangled]=1
+
+        __bsc_line "${mangled}() {"
+        __bsc_push_indent
+        __bsc_in_func=1
+
+        # Emit parameter bindings
+        local pi=1
+        local p="$params"
+        while [[ "$p" != 'n:()' && -n "$p" && "$p" == p:* ]]; do
+            local pname="${__bs_car[$p]}"
+            __bsc_mangle "${pname:2}"
+            __bsc_line "local ${__bsc_ret}=\"\${$pi}\""
+            (( pi++ ))
+            p="${__bs_cdr[$p]}"
+        done
+        # Handle rest param (dotted pair)
+        if [[ "$p" == y:* ]]; then
+            __bsc_mangle "${p:2}"
+            __bsc_line "shift $(( pi - 1 ))"
+            __bsc_line "local -a ${__bsc_ret}=(\"\$@\")"
+        fi
+
+        # Emit body — last expression may need __r= for return value
+        __bsc_emit_func_body "$body_rest"
+
+        __bsc_in_func=0
+        __bsc_pop_indent
+        __bsc_line "}"
+        __bsc_line ""
+        __bsc_ret=""
+    fi
+}
+
+# Emit function body: statements for all but last, return value for last
+__bsc_emit_func_body() {
+    local exprs="$1"
+    while [[ "$exprs" != 'n:()' && -n "$exprs" ]]; do
+        local e="${__bs_car[$exprs]}"
+        local next="${__bs_cdr[$exprs]}"
+        if [[ "$next" == 'n:()' ]]; then
+            # Last expression in return context
+            local _save_rc="${__bsc_return_ctx:-}"
+            __bsc_return_ctx=1
+            __bsc_emit_expr "$e" "stmt"
+            __bsc_return_ctx="$_save_rc"
+            if [[ -n "$__bsc_ret" && "$__bsc_ret" != "# "* ]]; then
+                if [[ "$__bsc_ret" == "\$__r" ]]; then
+                    : # already in __r
+                else
+                    __bsc_line "__r=$__bsc_ret"
+                fi
+            fi
+        else
+            __bsc_emit_expr "$e" "stmt"
+            [[ -n "$__bsc_ret" && "$__bsc_ret" != "" ]] && __bsc_line "$__bsc_ret"
+        fi
+        exprs="$next"
+    done
+}
+
+# ── Set! ──────────────────────────────────────────────────────────────────────
+__bsc_emit_set() {
+    local rest="$1"
+    local var_e="${__bs_car[$rest]}"
+    local val_e="${__bs_car[${__bs_cdr[$rest]}]}"
+    local vname="${var_e:2}"
+    __bsc_mangle "$vname"
+    local mangled="$__bsc_ret"
+
+    # Check if value is a simple arithmetic expression
+    __bsc_emit_expr "$val_e" "expr"
+    local val="$__bsc_ret"
+
+    # Special case: (set! var (+ var 1)) → ((var++))
+    if [[ "${val_e:0:2}" == "p:" ]]; then
+        local vh="${__bs_car[$val_e]}"
+        local vr="${__bs_cdr[$val_e]}"
+        if [[ "$vh" == "y:+" ]]; then
+            local a1="${__bs_car[$vr]}"
+            local a2r="${__bs_cdr[$vr]}"
+            if [[ "$a2r" != 'n:()' ]]; then
+                local a2="${__bs_car[$a2r]}"
+                if [[ "$a1" == "$var_e" && "$a2" == "i:1" ]]; then
+                    __bsc_line "(( ${mangled}++ )) || true"
+                    __bsc_ret=""
+                    return 0
+                elif [[ "$a2" == "$var_e" && "$a1" == "i:1" ]]; then
+                    __bsc_line "(( ${mangled}++ )) || true"
+                    __bsc_ret=""
+                    return 0
+                fi
+            fi
+        elif [[ "$vh" == "y:-" ]]; then
+            local a1="${__bs_car[$vr]}"
+            local a2r="${__bs_cdr[$vr]}"
+            if [[ "$a2r" != 'n:()' ]]; then
+                local a2="${__bs_car[$a2r]}"
+                if [[ "$a1" == "$var_e" && "$a2" == "i:1" ]]; then
+                    __bsc_line "(( ${mangled}-- )) || true"
+                    __bsc_ret=""
+                    return 0
+                fi
+            fi
+        fi
+    fi
+
+    # Check if value is arithmetic
+    if [[ -n "${__bsc_int_vars[$mangled]:-}" ]]; then
+        # Known integer variable — use arithmetic assignment
+        if [[ "${val_e:0:2}" == "p:" ]]; then
+            local vh2="${__bs_car[$val_e]}"
+            case "$vh2" in
+                'y:+'|'y:-'|'y:*'|'y:/'|'y:quotient'|'y:remainder'|'y:modulo'|'y:max'|'y:min'|'y:abs')
+                    __bsc_emit_arith_val "$val_e"
+                    __bsc_line "(( ${mangled} = $__bsc_ret )) || true"
+                    __bsc_ret=""
+                    return 0 ;;
+                'y:string-length'|'y:vector-length')
+                    __bsc_emit_arith_val "$val_e"
+                    __bsc_line "${mangled}=$__bsc_ret"
+                    __bsc_ret=""
+                    return 0 ;;
+            esac
+        fi
+        if [[ "$val" =~ ^-?[0-9]+$ ]] || [[ "$val" =~ ^\$[a-zA-Z_] ]]; then
+            __bsc_line "${mangled}=$val"
+        else
+            __bsc_line "${mangled}=$val"
+        fi
+    elif [[ -n "${__bsc_arr_vars[$mangled]:-}" ]]; then
+        # Known array variable — assign as array
+        if [[ "$val" == '("'* || "$val" == '($'* || "$val" == "()" ]]; then
+            __bsc_line "${mangled}=$val"
+        elif [[ "$val" == "\$__r" ]]; then
+            # Result from a function that returns an array
+            __bsc_line "${mangled}=(\"\${__r[@]}\")"
+        elif [[ "$val" == *'[@]'* ]]; then
+            __bsc_line "${mangled}=($val)"
+        else
+            __bsc_line "${mangled}=$val"
+        fi
+    else
+        __bsc_line "${mangled}=$val"
+    fi
+    __bsc_ret=""
+}
+
+# ── Let ───────────────────────────────────────────────────────────────────────
+__bsc_emit_let() {
+    local rest="$1" mode="$2"
+    local first="${__bs_car[$rest]}"
+
+    # Named let: (let name ((v i) ...) body...)
+    if [[ "$first" == y:* ]]; then
+        __bsc_emit_named_let "$rest" "$mode"
+        return 0
+    fi
+
+    # Regular let: (let ((v i) ...) body...)
+    local bindings="$first"
+    local body="${__bs_cdr[$rest]}"
+
+    local b="$bindings"
+    while [[ "$b" != 'n:()' ]]; do
+        local bnd="${__bs_car[$b]}"
+        local var="${__bs_car[$bnd]}"
+        local init="${__bs_car[${__bs_cdr[$bnd]}]}"
+        __bsc_mangle "${var:2}"
+        local mvar="$__bsc_ret"
+
+        __bsc_emit_expr "$init" "expr"
+        local ival="$__bsc_ret"
+
+        __bsc_emit_local_binding "$mvar" "$ival"
+        b="${__bs_cdr[$b]}"
+    done
+
+    if [[ "${__bsc_return_ctx:-}" == 1 ]]; then
+        __bsc_emit_body_rc "$body"
+    else
+        __bsc_emit_body "$body"
+    fi
+    __bsc_ret=""
+}
+
+# ── Named Let (loops) ────────────────────────────────────────────────────────
+__bsc_emit_named_let() {
+    local rest="$1" mode="$2"
+    local loop_name_e="${__bs_car[$rest]}"
+    local loop_name="${loop_name_e:2}"
+    __bsc_mangle "$loop_name"
+    local m_loop="$__bsc_ret"
+
+    local bindings="${__bs_car[${__bs_cdr[$rest]}]}"
+    local body="${__bs_cdr[${__bs_cdr[$rest]}]}"
+
+    # Emit initial bindings
+    local b="$bindings"
+    local -a bind_vars=() bind_mangles=()
+    while [[ "$b" != 'n:()' ]]; do
+        local bnd="${__bs_car[$b]}"
+        local var="${__bs_car[$bnd]}"
+        local init="${__bs_car[${__bs_cdr[$bnd]}]}"
+        __bsc_mangle "${var:2}"
+        local mvar="$__bsc_ret"
+        bind_vars+=("${var:2}")
+        bind_mangles+=("$mvar")
+
+        __bsc_emit_expr "$init" "expr"
+        local ival="$__bsc_ret"
+
+        __bsc_emit_local_binding "$mvar" "$ival"
+        b="${__bs_cdr[$b]}"
+    done
+
+    # Emit as while-true loop
+    __bsc_line "while true; do"
+    __bsc_push_indent
+
+    # Replace recursive calls to loop_name with continue
+    __bsc_emit_named_let_body "$body" "$loop_name" "${bind_vars[*]}" "${bind_mangles[*]}"
+
+    __bsc_line "break"
+    __bsc_pop_indent
+    __bsc_line "done"
+    __bsc_ret=""
+}
+
+# Emit body of named-let, replacing tail calls with variable updates + continue
+__bsc_emit_named_let_body() {
+    local body="$1" loop_name="$2" bind_vars_str="$3" bind_mangles_str="$4"
+    local -a bind_vars=($bind_vars_str) bind_mangles=($bind_mangles_str)
+
+    local exprs="$body"
+    while [[ "$exprs" != 'n:()' && -n "$exprs" ]]; do
+        local e="${__bs_car[$exprs]}"
+        local next="${__bs_cdr[$exprs]}"
+
+        if [[ "$next" == 'n:()' ]]; then
+            # Last expression — check for tail call to loop
+            __bsc_emit_named_let_expr "$e" "$loop_name" "$bind_vars_str" "$bind_mangles_str"
+        else
+            __bsc_emit_named_let_expr "$e" "$loop_name" "$bind_vars_str" "$bind_mangles_str"
+        fi
+        exprs="$next"
+    done
+}
+
+__bsc_emit_named_let_expr() {
+    local expr="$1" loop_name="$2" bind_vars_str="$3" bind_mangles_str="$4"
+    local -a bind_vars=($bind_vars_str) bind_mangles=($bind_mangles_str)
+
+    [[ "${expr:0:2}" != "p:" ]] && {
+        __bsc_emit_expr "$expr" "stmt"
+        if [[ -n "$__bsc_ret" && "$__bsc_ret" != "# "* ]]; then
+            if [[ "${__bsc_return_ctx:-}" == 1 && "$__bsc_ret" != "\$__r" ]]; then
+                __bsc_line "__r=$__bsc_ret"
+            else
+                __bsc_line "$__bsc_ret"
+            fi
+        fi
+        return 0
+    }
+
+    local head="${__bs_car[$expr]}"
+    local rest="${__bs_cdr[$expr]}"
+
+    # Direct tail call: (loop-name arg1 arg2 ...)
+    if [[ "$head" == "y:$loop_name" ]]; then
+        __bsc_emit_loop_continue "$rest" "$bind_vars_str" "$bind_mangles_str"
+        return 0
+    fi
+
+    # if/when/unless with tail calls
+    case "$head" in
+        'y:if')
+            local test_e="${__bs_car[$rest]}"
+            local branches="${__bs_cdr[$rest]}"
+            local then_e="${__bs_car[$branches]}"
+            local else_rest="${__bs_cdr[$branches]}"
+
+            __bsc_emit_test "$test_e"
+            __bsc_line "if $__bsc_ret; then"
+            __bsc_push_indent
+            __bsc_emit_named_let_expr "$then_e" "$loop_name" "$bind_vars_str" "$bind_mangles_str"
+            __bsc_pop_indent
+            if [[ "$else_rest" != 'n:()' ]]; then
+                local else_e="${__bs_car[$else_rest]}"
+                __bsc_line "else"
+                __bsc_push_indent
+                __bsc_emit_named_let_expr "$else_e" "$loop_name" "$bind_vars_str" "$bind_mangles_str"
+                __bsc_pop_indent
+            fi
+            __bsc_line "fi"
+            return 0 ;;
+
+        'y:when')
+            local test_e="${__bs_car[$rest]}"
+            local body="${__bs_cdr[$rest]}"
+            __bsc_emit_test "$test_e"
+            __bsc_line "if $__bsc_ret; then"
+            __bsc_push_indent
+            __bsc_emit_named_let_body "$body" "$loop_name" "$bind_vars_str" "$bind_mangles_str"
+            __bsc_pop_indent
+            __bsc_line "fi"
+            return 0 ;;
+
+        'y:unless')
+            local test_e="${__bs_car[$rest]}"
+            local body="${__bs_cdr[$rest]}"
+            __bsc_emit_test "$test_e"
+            __bsc_line "if ! $__bsc_ret; then"
+            __bsc_push_indent
+            __bsc_emit_named_let_body "$body" "$loop_name" "$bind_vars_str" "$bind_mangles_str"
+            __bsc_pop_indent
+            __bsc_line "fi"
+            return 0 ;;
+
+        'y:begin')
+            __bsc_emit_named_let_body "$rest" "$loop_name" "$bind_vars_str" "$bind_mangles_str"
+            return 0 ;;
+
+        'y:cond')
+            __bsc_emit_cond_with_loop "$rest" "$loop_name" "$bind_vars_str" "$bind_mangles_str"
+            return 0 ;;
+
+        'y:let'|'y:let*')
+            # Emit bindings, then body in loop context
+            local _nl_first="${__bs_car[$rest]}"
+            local _nl_bindings _nl_body
+            if [[ "$_nl_first" == y:* ]]; then
+                # Named let inside named let - just emit normally
+                __bsc_emit_expr "$expr" "stmt"
+                [[ -n "$__bsc_ret" ]] && __bsc_line "$__bsc_ret"
+                return 0
+            fi
+            _nl_bindings="$_nl_first"
+            _nl_body="${__bs_cdr[$rest]}"
+            local _nl_b="$_nl_bindings"
+            while [[ "$_nl_b" != 'n:()' ]]; do
+                local _nl_bnd="${__bs_car[$_nl_b]}"
+                local _nl_var="${__bs_car[$_nl_bnd]}"
+                local _nl_init="${__bs_car[${__bs_cdr[$_nl_bnd]}]}"
+                __bsc_mangle "${_nl_var:2}"
+                local _nl_mvar="$__bsc_ret"
+                __bsc_emit_expr "$_nl_init" "expr"
+                __bsc_emit_local_binding "$_nl_mvar" "$__bsc_ret"
+                _nl_b="${__bs_cdr[$_nl_b]}"
+            done
+            __bsc_emit_named_let_body "$_nl_body" "$loop_name" "$bind_vars_str" "$bind_mangles_str"
+            return 0 ;;
+    esac
+
+    # Not a tail call — emit normally
+    __bsc_emit_expr "$expr" "stmt"
+    if [[ -n "$__bsc_ret" && "$__bsc_ret" != "# "* ]]; then
+        if [[ "${__bsc_return_ctx:-}" == 1 ]]; then
+            [[ "$__bsc_ret" != "\$__r" ]] && __bsc_line "__r=$__bsc_ret"
+        else
+            __bsc_line "$__bsc_ret"
+        fi
+    fi
+}
+
+# Emit loop continue: update variables and continue
+__bsc_emit_loop_continue() {
+    local args="$1" bind_vars_str="$2" bind_mangles_str="$3"
+    local -a bind_vars=($bind_vars_str) bind_mangles=($bind_mangles_str)
+
+    # Compute new values
+    local -a new_vals=()
+    local _lc_a="$args"
+    local -i _lc_n=${#bind_vars[@]} _lc_i
+    for (( _lc_i=0; _lc_i<_lc_n; _lc_i++ )); do
+        if [[ "$_lc_a" != 'n:()' ]]; then
+            __bsc_emit_expr "${__bs_car[$_lc_a]}" "expr"
+            new_vals+=("$__bsc_ret")
+            _lc_a="${__bs_cdr[$_lc_a]}"
+        fi
+    done
+
+    # Helper: check if a value or its target variable is an array
+    _lc_is_arr() {
+        [[ "$1" == "("* ]] && return 0
+        [[ -n "${__bsc_arr_vars[$2]:-}" ]] && return 0
+        return 1
+    }
+
+    # Assign new values (use temp vars to handle simultaneous update)
+    if (( _lc_n == 1 )); then
+        local _v="${new_vals[0]}" _m="${bind_mangles[0]}"
+        if _lc_is_arr "$_v" "$_m"; then
+            if [[ "$_v" == "("* ]]; then
+                __bsc_line "${_m}=${_v}"
+            else
+                __bsc_line "${_m}=(\"\${${_v#\$}[@]}\")"
+            fi
+        else
+            __bsc_line "${_m}=${_v}"
+        fi
+    else
+        # Use temp vars for simultaneous update
+        for (( _lc_i=0; _lc_i<_lc_n; _lc_i++ )); do
+            local _v="${new_vals[$_lc_i]}" _m="${bind_mangles[$_lc_i]}"
+            if _lc_is_arr "$_v" "$_m"; then
+                if [[ "$_v" == "("* ]]; then
+                    __bsc_line "local -a __t${_lc_i}=${_v}"
+                else
+                    __bsc_line "local -a __t${_lc_i}=(\"\${${_v#\$}[@]}\")"
+                fi
+            else
+                __bsc_line "local __t${_lc_i}=${_v}"
+            fi
+        done
+        for (( _lc_i=0; _lc_i<_lc_n; _lc_i++ )); do
+            local _v="${new_vals[$_lc_i]}" _m="${bind_mangles[$_lc_i]}"
+            if _lc_is_arr "$_v" "$_m"; then
+                __bsc_line "${_m}=(\"\${__t${_lc_i}[@]}\")"
+            else
+                __bsc_line "${_m}=\$__t${_lc_i}"
+            fi
+        done
+    fi
+    __bsc_line "continue"
+}
+
+# Emit cond in named-let context (with tail call optimization)
+__bsc_emit_cond_with_loop() {
+    local clauses="$1" loop_name="$2" bv="$3" bm="$4"
+    local first=1
+    local _extra_fi=0
+
+    while [[ "$clauses" != 'n:()' ]]; do
+        local clause="${__bs_car[$clauses]}"
+        local test_e="${__bs_car[$clause]}"
+        local cl_body="${__bs_cdr[$clause]}"
+
+        if [[ "$test_e" == 'y:else' || "$test_e" == 'b:#t' ]]; then
+            if (( first )); then
+                __bsc_emit_named_let_body "$cl_body" "$loop_name" "$bv" "$bm"
+            else
+                __bsc_line "else"
+                __bsc_push_indent
+                __bsc_emit_named_let_body "$cl_body" "$loop_name" "$bv" "$bm"
+                __bsc_pop_indent
+                __bsc_line "fi"
+            fi
+            local _ef; for (( _ef=0; _ef<_extra_fi; _ef++ )); do
+                __bsc_pop_indent
+                __bsc_line "fi"
+            done
+            return 0
+        fi
+
+        local _pre_len=${#__bsc_out}
+        __bsc_emit_test "$test_e"
+        local _test_expr="$__bsc_ret"
+        local _has_preamble=0
+        local _preamble=""
+        if (( ${#__bsc_out} > _pre_len )); then
+            _preamble="${__bsc_out:$_pre_len}"
+            __bsc_out="${__bsc_out:0:$_pre_len}"
+            _has_preamble=1
+        fi
+        if (( first )); then
+            [[ -n "$_preamble" ]] && __bsc_out+="$_preamble"
+            __bsc_line "if $_test_expr; then"
+            first=0
+        elif (( _has_preamble )); then
+            __bsc_line "else"
+            __bsc_push_indent
+            __bsc_out+="$_preamble"
+            __bsc_line "if $_test_expr; then"
+            (( _extra_fi++ ))
+        else
+            __bsc_line "elif $_test_expr; then"
+        fi
+        __bsc_push_indent
+        __bsc_emit_named_let_body "$cl_body" "$loop_name" "$bv" "$bm"
+        __bsc_pop_indent
+
+        clauses="${__bs_cdr[$clauses]}"
+    done
+    (( first )) || __bsc_line "fi"
+    local _ef; for (( _ef=0; _ef<_extra_fi; _ef++ )); do
+        __bsc_pop_indent
+        __bsc_line "fi"
+    done
+}
+
+# ── Let* ──────────────────────────────────────────────────────────────────────
+__bsc_emit_letstar() {
+    local rest="$1" mode="$2"
+    local bindings="${__bs_car[$rest]}"
+    local body="${__bs_cdr[$rest]}"
+
+    local b="$bindings"
+    while [[ "$b" != 'n:()' ]]; do
+        local bnd="${__bs_car[$b]}"
+        local var="${__bs_car[$bnd]}"
+        local init="${__bs_car[${__bs_cdr[$bnd]}]}"
+        __bsc_mangle "${var:2}"
+        local mvar="$__bsc_ret"
+
+        __bsc_emit_expr "$init" "expr"
+        local ival="$__bsc_ret"
+
+        __bsc_emit_local_binding "$mvar" "$ival"
+        b="${__bs_cdr[$b]}"
+    done
+
+    if [[ "${__bsc_return_ctx:-}" == 1 ]]; then
+        __bsc_emit_body_rc "$body"
+    else
+        __bsc_emit_body "$body"
+    fi
+    __bsc_ret=""
+}
+
+# ── Cond ──────────────────────────────────────────────────────────────────────
+__bsc_emit_cond() {
+    local clauses="$1" mode="$2"
+    local first=1
+    local _save_rc="${__bsc_return_ctx:-}"
+    [[ "$mode" == "expr" ]] && __bsc_return_ctx=1
+    local _extra_fi=0
+
+    while [[ "$clauses" != 'n:()' ]]; do
+        local clause="${__bs_car[$clauses]}"
+        local test_e="${__bs_car[$clause]}"
+        local cl_body="${__bs_cdr[$clause]}"
+
+        if [[ "$test_e" == 'y:else' || "$test_e" == 'b:#t' ]]; then
+            if (( first )); then
+                __bsc_emit_body_rc "$cl_body"
+            else
+                __bsc_line "else"
+                __bsc_push_indent
+                __bsc_emit_body_rc "$cl_body"
+                __bsc_pop_indent
+                __bsc_line "fi"
+            fi
+            local _ef; for (( _ef=0; _ef<_extra_fi; _ef++ )); do
+                __bsc_pop_indent
+                __bsc_line "fi"
+            done
+            __bsc_return_ctx="$_save_rc"
+            if [[ "$mode" == "expr" ]]; then
+                __bsc_ret="\$__r"
+            else
+                __bsc_ret=""
+            fi
+            return 0
+        fi
+
+        # Check if test expression produces preamble (side-effect lines)
+        local _pre_len=${#__bsc_out}
+        __bsc_emit_test "$test_e"
+        local _test_expr="$__bsc_ret"
+        local _has_preamble=0
+        local _preamble=""
+        if (( ${#__bsc_out} > _pre_len )); then
+            _preamble="${__bsc_out:$_pre_len}"
+            __bsc_out="${__bsc_out:0:$_pre_len}"
+            _has_preamble=1
+        fi
+        if (( first )); then
+            # For the first clause, preamble before 'if' is fine
+            [[ -n "$_preamble" ]] && __bsc_out+="$_preamble"
+            __bsc_line "if $_test_expr; then"
+            first=0
+        elif (( _has_preamble )); then
+            # Preamble between elif and previous body is invalid bash;
+            # use else + nested if to place preamble correctly
+            __bsc_line "else"
+            __bsc_push_indent
+            __bsc_out+="$_preamble"
+            __bsc_line "if $_test_expr; then"
+            (( _extra_fi++ ))
+        else
+            __bsc_line "elif $_test_expr; then"
+        fi
+        __bsc_push_indent
+        __bsc_emit_body_rc "$cl_body"
+        __bsc_pop_indent
+
+        clauses="${__bs_cdr[$clauses]}"
+    done
+    (( first )) || __bsc_line "fi"
+    local _ef; for (( _ef=0; _ef<_extra_fi; _ef++ )); do
+        __bsc_pop_indent
+        __bsc_line "fi"
+    done
+    __bsc_return_ctx="$_save_rc"
+    if [[ "$mode" == "expr" ]]; then
+        __bsc_ret="\$__r"
+    else
+        __bsc_ret=""
+    fi
+}
+
+# ── Case ──────────────────────────────────────────────────────────────────────
+__bsc_emit_case() {
+    local rest="$1" mode="$2"
+    local key_e="${__bs_car[$rest]}"
+    local clauses="${__bs_cdr[$rest]}"
+
+    __bsc_emit_expr "$key_e" "expr"
+    __bsc_line "case \"$__bsc_ret\" in"
+    __bsc_push_indent
+
+    while [[ "$clauses" != 'n:()' ]]; do
+        local clause="${__bs_car[$clauses]}"
+        local datums="${__bs_car[$clause]}"
+        local cl_body="${__bs_cdr[$clause]}"
+
+        if [[ "$datums" == 'y:else' ]]; then
+            __bsc_line "*)"
+        else
+            local pats="" d="$datums"
+            while [[ "$d" != 'n:()' && "$d" == p:* ]]; do
+                local datum="${__bs_car[$d]}"
+                __bsc_emit_quote "$datum"
+                [[ -n "$pats" ]] && pats+="|"
+                pats+="$__bsc_ret"
+                d="${__bs_cdr[$d]}"
+            done
+            __bsc_line "$pats)"
+        fi
+        __bsc_push_indent
+        __bsc_emit_body "$cl_body"
+        __bsc_line ";;"
+        __bsc_pop_indent
+
+        clauses="${__bs_cdr[$clauses]}"
+    done
+
+    __bsc_pop_indent
+    __bsc_line "esac"
+    __bsc_ret=""
+}
+
+# ── And / Or ──────────────────────────────────────────────────────────────────
+__bsc_emit_and() {
+    local rest="$1" mode="$2"
+    # In statement context, just test each
+    __bsc_list_to_array "$rest"
+    if (( ${#__bsc_list_result[@]} == 0 )); then
+        __bsc_ret="1"; return 0
+    fi
+    # Emit as if chains
+    local exprs="$rest"
+    local first_e="${__bs_car[$exprs]}"
+    local rest_e="${__bs_cdr[$exprs]}"
+    if [[ "$rest_e" == 'n:()' ]]; then
+        __bsc_emit_expr "$first_e" "$mode"
+        return 0
+    fi
+    # Multi-element and in test: already handled by __bsc_emit_test
+    # In statement/expr: emit last value if all true
+    __bsc_emit_expr "$first_e" "stmt"
+    [[ -n "$__bsc_ret" ]] && __bsc_line "$__bsc_ret"
+    __bsc_ret=""
+}
+
+__bsc_emit_or() {
+    local rest="$1" mode="$2"
+    __bsc_list_to_array "$rest"
+    if (( ${#__bsc_list_result[@]} == 0 )); then
+        __bsc_ret="0"; return 0
+    fi
+    local first_e="${__bs_car[$rest]}"
+    local rest_e="${__bs_cdr[$rest]}"
+    if [[ "$rest_e" == 'n:()' ]]; then
+        __bsc_emit_expr "$first_e" "$mode"
+        return 0
+    fi
+    __bsc_emit_expr "$first_e" "stmt"
+    [[ -n "$__bsc_ret" ]] && __bsc_line "$__bsc_ret"
+    __bsc_ret=""
+}
+
+__bsc_emit_not() {
+    local rest="$1" mode="$2"
+    __bsc_emit_test "${__bs_car[$rest]}"
+    if [[ "$mode" == "test" ]]; then
+        __bsc_ret="! $__bsc_ret"
+    else
+        __bsc_ret=""
+    fi
+}
+
+# ── Do ────────────────────────────────────────────────────────────────────────
+__bsc_emit_do() {
+    local rest="$1" mode="$2"
+    local var_specs="${__bs_car[$rest]}"
+    local test_clause="${__bs_car[${__bs_cdr[$rest]}]}"
+    local commands="${__bs_cdr[${__bs_cdr[$rest]}]}"
+    local test_e="${__bs_car[$test_clause]}"
+    local result_exprs="${__bs_cdr[$test_clause]}"
+
+    # Init vars
+    local vs="$var_specs"
+    local -a dv_names=() dv_mangles=() dv_steps=()
+    while [[ "$vs" != 'n:()' ]]; do
+        local spec="${__bs_car[$vs]}"
+        local dvar="${__bs_car[$spec]}"
+        local dinit="${__bs_car[${__bs_cdr[$spec]}]}"
+        local ds_rest="${__bs_cdr[${__bs_cdr[$spec]}]}"
+        __bsc_mangle "${dvar:2}"
+        local dm="$__bsc_ret"
+        dv_names+=("${dvar:2}")
+        dv_mangles+=("$dm")
+
+        __bsc_emit_expr "$dinit" "expr"
+        local iv="$__bsc_ret"
+        __bsc_emit_local_binding "$dm" "$iv"
+
+        if [[ "$ds_rest" != 'n:()' ]]; then
+            dv_steps+=("${__bs_car[$ds_rest]}")
+        else
+            dv_steps+=("")
+        fi
+        vs="${__bs_cdr[$vs]}"
+    done
+
+    # Emit loop
+    __bsc_emit_test "$test_e"
+    __bsc_line "while ! $__bsc_ret; do"
+    __bsc_push_indent
+
+    # Commands
+    __bsc_emit_body "$commands"
+
+    # Steps
+    if (( ${#dv_names[@]} == 1 )); then
+        if [[ -n "${dv_steps[0]}" ]]; then
+            __bsc_emit_expr "${dv_steps[0]}" "expr"
+            __bsc_line "${dv_mangles[0]}=$__bsc_ret"
+        fi
+    else
+        for (( _k=0; _k<${#dv_names[@]}; _k++ )); do
+            if [[ -n "${dv_steps[$_k]}" ]]; then
+                __bsc_emit_expr "${dv_steps[$_k]}" "expr"
+                __bsc_line "local __dt${_k}=$__bsc_ret"
+            fi
+        done
+        for (( _k=0; _k<${#dv_names[@]}; _k++ )); do
+            if [[ -n "${dv_steps[$_k]}" ]]; then
+                __bsc_line "${dv_mangles[$_k]}=\$__dt${_k}"
+            fi
+        done
+    fi
+
+    __bsc_pop_indent
+    __bsc_line "done"
+
+    # Result
+    if [[ "$result_exprs" != 'n:()' ]]; then
+        __bsc_emit_body "$result_exprs"
+    fi
+    __bsc_ret=""
+}
+
+# ── Lambda ────────────────────────────────────────────────────────────────────
+__bsc_emit_lambda() {
+    local rest="$1"
+    # Emit as inline function name (will be handled at call site)
+    __bsc_ret="# lambda (not yet inlined)"
+}
+
+# ── Apply ─────────────────────────────────────────────────────────────────────
+__bsc_emit_apply() {
+    local rest="$1" mode="$2"
+    local proc_e="${__bs_car[$rest]}"
+    local args_rest="${__bs_cdr[$rest]}"
+
+    # Special case: (apply string-append ...)
+    if [[ "$proc_e" == "y:string-append" ]]; then
+        local _apply_args=()
+        local _ar="$args_rest"
+        while [[ "$_ar" != 'n:()' ]]; do
+            _apply_args+=("${__bs_car[$_ar]}")
+            _ar="${__bs_cdr[$_ar]}"
+        done
+        local _last_arg="${_apply_args[${#_apply_args[@]}-1]}"
+        local _prefix_parts=()
+        for (( _ai=0; _ai<${#_apply_args[@]}-1; _ai++ )); do
+            __bsc_emit_expr "${_apply_args[$_ai]}" "expr"
+            _prefix_parts+=("$__bsc_ret")
+        done
+        # Last arg is the list to spread
+        local _list_expr="$_last_arg"
+        local _reverse=0
+        if [[ "${_list_expr:0:2}" == "p:" && "${__bs_car[$_list_expr]}" == "y:reverse" ]]; then
+            local rev_arg="${__bs_car[${__bs_cdr[$_list_expr]}]}"
+            __bsc_emit_expr "$rev_arg" "expr"
+            local arr="$(__bsc_strip_dollar "$__bsc_ret")"
+            _reverse=1
+        else
+            __bsc_emit_expr "$_list_expr" "expr"
+            local arr="$(__bsc_strip_dollar "$__bsc_ret")"
+        fi
+        if (( _reverse )); then
+            # Reverse iteration: emit a loop that walks the array backwards
+            local _pfx=""
+            if (( ${#_prefix_parts[@]} > 0 )); then
+                for _pp in "${_prefix_parts[@]}"; do _pfx+="\${$(__bsc_strip_dollar "$_pp")}"; done
+            fi
+            __bsc_ret="\"\$(printf '%s' \"${_pfx}\"; for (( __i=\${#${arr}[@]}-1; __i>=0; __i-- )); do printf '%s' \"\${${arr}[\$__i]}\"; done)\""
+        elif (( ${#_prefix_parts[@]} > 0 )); then
+            local _pfx=""
+            for _pp in "${_prefix_parts[@]}"; do _pfx+="\${$(__bsc_strip_dollar "$_pp")}"; done
+            __bsc_ret="\"${_pfx}\$(IFS=''; echo \"\${${arr}[*]}\")\""
+        else
+            __bsc_ret="\$(IFS=''; echo \"\${${arr}[*]}\")"
+        fi
+        return 0
+    fi
+
+    # General apply: function + args
+    __bsc_mangle "${proc_e:2}"
+    local mfunc="$__bsc_ret"
+    __bsc_emit_expr "${__bs_car[$args_rest]}" "expr"
+    __bsc_line "$mfunc \"\${$(__bsc_strip_dollar "$__bsc_ret")[@]}\""
+    __bsc_ret=""
+}
+
+# ── Error ─────────────────────────────────────────────────────────────────────
+__bsc_emit_error() {
+    local rest="$1"
+    __bsc_emit_expr "${__bs_car[$rest]}" "expr"
+    __bsc_line "printf 'error: %s\\n' $__bsc_ret >&2"
+    __bsc_line "return 1"
+    __bsc_ret=""
+}
+
+# ── Function call ─────────────────────────────────────────────────────────────
+__bsc_emit_call() {
+    local head="$1" rest="$2" mode="$3"
+    local fname="${head:2}"
+    __bsc_mangle "$fname"
+    local mfunc="$__bsc_ret"
+
+    # Collect arguments, handling function call results and array expansions
+    local args_str=""
+    local arg_tmpn=0
+    local a="$rest"
+    while [[ "$a" != 'n:()' && -n "$a" ]]; do
+        __bsc_emit_expr "${__bs_car[$a]}" "expr"
+        local v="$__bsc_ret"
+        # If variable is a known array, expand it
+        if [[ "$v" == '$'* && "$v" != '$('* ]]; then
+            local _vn="${v:1}"
+            if [[ -n "${__bsc_arr_vars[$_vn]:-}" ]]; then
+                v="\"\${${_vn}[@]}\""
+            fi
+        fi
+        # If result is $__r, save to temp to avoid clobbering
+        if [[ "$v" == "\$__r" ]]; then
+            __bsc_line "local __ca${arg_tmpn}=\"\$__r\""
+            v="\$__ca${arg_tmpn}"
+            (( arg_tmpn++ ))
+        fi
+        [[ -n "$args_str" ]] && args_str+=" "
+        # Array literal → expand elements inline as individual args
+        if [[ "$v" == "("*")" ]]; then
+            local inner="${v:1:${#v}-2}"
+            # Store in temp array and expand
+            __bsc_line "local -a __la${arg_tmpn}=($inner)"
+            args_str+="\"\${__la${arg_tmpn}[@]}\""
+            (( arg_tmpn++ ))
+        elif [[ "$v" == '"'* || "$v" == '$(('* || "$v" =~ ^-?[0-9]+$ || "$v" == "\$'"* ]]; then
+            args_str+="$v"
+        elif [[ "$v" == '$'* ]]; then
+            # Quote bare $var references to prevent word-splitting
+            args_str+="\"$v\""
+        else
+            args_str+="\"$v\""
+        fi
+        a="${__bs_cdr[$a]}"
+    done
+
+    if [[ "$mode" == "expr" ]]; then
+        # Need result — emit call then reference __r
+        __bsc_line "$mfunc $args_str"
+        __bsc_ret="\$__r"
+    else
+        __bsc_line "$mfunc $args_str"
+        __bsc_ret=""
+    fi
+}
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Phase 2: Expression compilation — arithmetic, strings, comparisons
+# ══════════════════════════════════════════════════════════════════════════════
+
+# ── Arithmetic ────────────────────────────────────────────────────────────────
+__bsc_emit_arith() {
+    local head="$1" rest="$2" mode="$3"
+    local op="${head:2}"
+
+    __bsc_list_to_array "$rest"
+    local -a args=("${__bsc_list_result[@]}")
+
+    case "$op" in
+        'abs')
+            __bsc_emit_arith_val "${args[0]}"
+            local v="$__bsc_ret"
+            __bsc_ret="\$(( $v < 0 ? -($v) : $v ))"
+            return 0 ;;
+        'max')
+            __bsc_emit_arith_val "${args[0]}"; local a="$__bsc_ret"
+            __bsc_emit_arith_val "${args[1]}"; local b="$__bsc_ret"
+            __bsc_ret="\$(( $a > $b ? $a : $b ))"
+            return 0 ;;
+        'min')
+            __bsc_emit_arith_val "${args[0]}"; local a="$__bsc_ret"
+            __bsc_emit_arith_val "${args[1]}"; local b="$__bsc_ret"
+            __bsc_ret="\$(( $a < $b ? $a : $b ))"
+            return 0 ;;
+        'expt')
+            __bsc_emit_arith_val "${args[0]}"; local base="$__bsc_ret"
+            __bsc_emit_arith_val "${args[1]}"; local exp="$__bsc_ret"
+            __bsc_ret="\$(( $base ** $exp ))"
+            return 0 ;;
+    esac
+
+    # Standard binary/n-ary ops
+    local -a vals=()
+    for elem in "${args[@]}"; do
+        __bsc_emit_arith_val "$elem"
+        vals+=("$__bsc_ret")
+    done
+
+    local result
+    __bsc_emit_arith_inline_from_vals "$op" vals
+    result="$__bsc_ret"
+    __bsc_ret="\$(( $result ))"
+}
+
+__bsc_emit_arith_inline_from_vals() {
+    local op="$1"
+    local -n _vals="$2"
+
+    case "$op" in
+        '+')
+            if (( ${#_vals[@]} == 0 )); then __bsc_ret="0"
+            elif (( ${#_vals[@]} == 1 )); then __bsc_ret="${_vals[0]}"
+            else
+                local r="${_vals[0]}"
+                for (( _k=1; _k<${#_vals[@]}; _k++ )); do r+=" + ${_vals[$_k]}"; done
+                __bsc_ret="$r"
+            fi ;;
+        '-')
+            if (( ${#_vals[@]} == 1 )); then __bsc_ret="-(${_vals[0]})"
+            else
+                local r="${_vals[0]}"
+                for (( _k=1; _k<${#_vals[@]}; _k++ )); do r+=" - ${_vals[$_k]}"; done
+                __bsc_ret="$r"
+            fi ;;
+        '*')
+            if (( ${#_vals[@]} == 0 )); then __bsc_ret="1"
+            elif (( ${#_vals[@]} == 1 )); then __bsc_ret="${_vals[0]}"
+            else
+                local r="${_vals[0]}"
+                for (( _k=1; _k<${#_vals[@]}; _k++ )); do r+=" * ${_vals[$_k]}"; done
+                __bsc_ret="$r"
+            fi ;;
+        '/'|'quotient')
+            local r="${_vals[0]}"
+            for (( _k=1; _k<${#_vals[@]}; _k++ )); do r+=" / ${_vals[$_k]}"; done
+            __bsc_ret="$r" ;;
+        'remainder'|'modulo')
+            __bsc_ret="${_vals[0]} % ${_vals[1]}" ;;
+        *) __bsc_ret="${_vals[0]}" ;;
+    esac
+}
+
+# ── Numeric comparisons ──────────────────────────────────────────────────────
+__bsc_emit_num_cmp() {
+    local head="$1" rest="$2" mode="$3"
+    local op="${head:2}"
+
+    case "$op" in
+        'zero?'|'positive?'|'negative?'|'even?'|'odd?')
+            __bsc_emit_arith_val "${__bs_car[$rest]}"
+            local v="$__bsc_ret"
+            case "$op" in
+                'zero?')     __bsc_ret="(( $v == 0 ))" ;;
+                'positive?') __bsc_ret="(( $v > 0 ))" ;;
+                'negative?') __bsc_ret="(( $v < 0 ))" ;;
+                'even?')     __bsc_ret="(( $v % 2 == 0 ))" ;;
+                'odd?')      __bsc_ret="(( $v % 2 != 0 ))" ;;
+            esac
+            return 0 ;;
+    esac
+
+    local a_e="${__bs_car[$rest]}" b_e="${__bs_car[${__bs_cdr[$rest]}]}"
+    __bsc_emit_arith_val "$a_e"; local a="$__bsc_ret"
+    __bsc_emit_arith_val "$b_e"; local b="$__bsc_ret"
+
+    local bash_op="$op"
+    [[ "$op" == "=" ]] && bash_op="=="
+
+    if [[ "$mode" == "test" ]]; then
+        __bsc_ret="(( $a $bash_op $b ))"
+    else
+        __bsc_ret="(( $a $bash_op $b ))"
+    fi
+}
+
+# ── String/equality comparisons ──────────────────────────────────────────────
+__bsc_emit_str_cmp() {
+    local head="$1" rest="$2" mode="$3"
+    local op="${head:2}"
+    local a_e="${__bs_car[$rest]}" b_e="${__bs_car[${__bs_cdr[$rest]}]}"
+    __bsc_emit_expr "$a_e" "expr"; local a="$(__bsc_unquote "$__bsc_ret")"
+    __bsc_emit_expr "$b_e" "expr"; local b="$(__bsc_unquote "$__bsc_ret")"
+
+    case "$op" in
+        'equal?'|'eq?'|'eqv?'|'string=?'|'char=?')
+            __bsc_ret="[[ \"$a\" == \"$b\" ]]" ;;
+        'string<?'|'char<?')
+            __bsc_ret="[[ \"$a\" < \"$b\" ]]" ;;
+        'string>?')
+            __bsc_ret="[[ \"$a\" > \"$b\" ]]" ;;
+        'string<=?')
+            __bsc_ret="[[ ! \"$a\" > \"$b\" ]]" ;;
+        'string>=?'|'char>=?')
+            __bsc_ret="[[ ! \"$a\" < \"$b\" ]]" ;;
+    esac
+}
+
+# ── String operations ─────────────────────────────────────────────────────────
+__bsc_emit_string_op() {
+    local head="$1" rest="$2" mode="$3"
+    local op="${head:2}"
+
+    case "$op" in
+        'string-append')
+            __bsc_list_to_array "$rest"
+            # First pass: evaluate all args, saving function results to temps
+            local -a sa_vals=()
+            local sa_tmpn=0
+            for elem in "${__bsc_list_result[@]}"; do
+                __bsc_emit_expr "$elem" "expr"
+                local v="$__bsc_ret"
+                if [[ "$v" == "\$__r" ]]; then
+                    # Function call result — save to temp
+                    __bsc_line "local __sa${sa_tmpn}=\"\$__r\""
+                    sa_vals+=("\$__sa${sa_tmpn}")
+                    (( sa_tmpn++ ))
+                else
+                    sa_vals+=("$v")
+                fi
+            done
+            # Build concatenation
+            local parts=""
+            for v in "${sa_vals[@]}"; do
+                if [[ "$v" == '"'*'"' ]]; then
+                    v="${v:1:${#v}-2}"
+                    parts+="$v"
+                elif [[ "$v" == '$((  '* || "$v" == '$(('* ]]; then
+                    # Arithmetic expansion — embed as-is
+                    parts+="$v"
+                elif [[ "$v" == "\$'"*"'" ]]; then
+                    # ANSI-C quoted string: $'\n' → embed literal char
+                    local _inner="${v:2:${#v}-3}"
+                    _inner="${_inner//\\n/$'\n'}"
+                    _inner="${_inner//\\t/$'\t'}"
+                    _inner="${_inner//\\\\/\\}"
+                    parts+="$_inner"
+                elif [[ "$v" == \$* ]]; then
+                    parts+="\${${v:1}}"
+                else
+                    parts+="$v"
+                fi
+            done
+            __bsc_ret="\"${parts}\""
+            return 0 ;;
+
+        'string-length')
+            __bsc_emit_expr "${__bs_car[$rest]}" "expr"
+            local v="$__bsc_ret"
+            # If it's a simple $variable, use ${#var}
+            if [[ "$v" == '$'[a-zA-Z_]* && "$v" != *'['* && "$v" != *'{'* && "$v" != *':'* ]]; then
+                __bsc_ret="\${#${v:1}}"
+            elif [[ "$v" == '"${'*'}"' ]]; then
+                # Complex expansion like "${em_lines[em_cy]:-}" — use temp var
+                __bsc_local "__sl=$v"
+                __bsc_ret="\${#__sl}"
+            else
+                __bsc_local "__sl=$v"
+                __bsc_ret="\${#__sl}"
+            fi
+            return 0 ;;
+
+        'substring')
+            __bsc_emit_expr "${__bs_car[$rest]}" "expr"
+            local s="$__bsc_ret"
+            s="$(__bsc_strip_dollar "$s")"
+            __bsc_emit_arith_val "${__bs_car[${__bs_cdr[$rest]}]}"
+            local start="$__bsc_ret"
+            __bsc_emit_arith_val "${__bs_car[${__bs_cdr[${__bs_cdr[$rest]}]}]}"
+            local end="$__bsc_ret"
+            __bsc_ret="\"\${${s}:${start}:\$(( ${end} - ${start} ))}\""
+            return 0 ;;
+
+        'string-ref')
+            __bsc_emit_expr "${__bs_car[$rest]}" "expr"
+            local s="$__bsc_ret"
+            s="$(__bsc_strip_dollar "$s")"
+            __bsc_emit_arith_val "${__bs_car[${__bs_cdr[$rest]}]}"
+            local idx="$__bsc_ret"
+            __bsc_ret="\"\${${s}:${idx}:1}\""
+            return 0 ;;
+
+        'string')
+            # (string ch) → string from char; single char is identity
+            __bsc_list_to_array "$rest"
+            if (( ${#__bsc_list_result[@]} == 1 )); then
+                __bsc_emit_expr "${__bsc_list_result[0]}" "expr"
+                return 0
+            fi
+            local parts=""
+            for elem in "${__bsc_list_result[@]}"; do
+                __bsc_emit_expr "$elem" "expr"
+                local v="$__bsc_ret"
+                if [[ "$v" == '"'*'"' ]]; then
+                    v="${v:1:${#v}-2}"
+                    parts+="$v"
+                elif [[ "$v" == \$* ]]; then
+                    parts+="\${${v:1}}"
+                else
+                    parts+="$v"
+                fi
+            done
+            __bsc_ret="\"${parts}\""
+            return 0 ;;
+
+        'make-string')
+            __bsc_emit_arith_val "${__bs_car[$rest]}"
+            local n="$__bsc_ret"
+            local fill_e="${__bs_car[${__bs_cdr[$rest]}]:-}"
+            local fill=" "
+            if [[ -n "$fill_e" && "$fill_e" != 'n:()' ]]; then
+                __bsc_emit_expr "$fill_e" "expr"
+                fill="$__bsc_ret"
+            fi
+            __bsc_ret="\$(printf '%*s' $n '' | tr ' ' \"$fill\")"
+            return 0 ;;
+
+        'string-copy')
+            __bsc_emit_expr "${__bs_car[$rest]}" "expr"
+            return 0 ;;
+
+        'string-upcase')
+            __bsc_emit_expr "${__bs_car[$rest]}" "expr"
+            local v="$(__bsc_strip_dollar "$__bsc_ret")"
+            __bsc_ret="\"\${${v}^^}\""
+            return 0 ;;
+
+        'string-downcase')
+            __bsc_emit_expr "${__bs_car[$rest]}" "expr"
+            local v="$(__bsc_strip_dollar "$__bsc_ret")"
+            __bsc_ret="\"\${${v},,}\""
+            return 0 ;;
+
+        'number->string')
+            __bsc_emit_expr "${__bs_car[$rest]}" "expr"
+            # In bash, numbers are already strings — just use the value
+            return 0 ;;
+
+        'string->number')
+            __bsc_emit_expr "${__bs_car[$rest]}" "expr"
+            __bsc_ret="$__bsc_ret"
+            return 0 ;;
+
+        'string->symbol'|'symbol->string')
+            __bsc_emit_expr "${__bs_car[$rest]}" "expr"
+            return 0 ;;
+
+        'string-repeat')
+            # Custom helper used in em.scm
+            __bsc_emit_expr "${__bs_car[$rest]}" "expr"
+            local s="$__bsc_ret"
+            __bsc_emit_arith_val "${__bs_car[${__bs_cdr[$rest]}]}"
+            local n="$__bsc_ret"
+            __bsc_line "string_repeat $s $n"
+            __bsc_ret="\$__r"
+            return 0 ;;
+    esac
+
+    __bsc_ret="\"\"  # unhandled string op: $op"
+}
+
+# ── Char operations ───────────────────────────────────────────────────────────
+__bsc_emit_char_op() {
+    local head="$1" rest="$2" mode="$3"
+    local op="${head:2}"
+
+    case "$op" in
+        'char->integer')
+            __bsc_emit_expr "${__bs_car[$rest]}" "expr"
+            local ch="$__bsc_ret"
+            __bsc_line "printf -v __r '%d' \"'$ch\""
+            __bsc_ret="\$__r"
+            return 0 ;;
+
+        'integer->char')
+            __bsc_emit_expr "${__bs_car[$rest]}" "expr"
+            __bsc_line "__r=\$(printf \"\\\\x\$(printf '%x' \"$__bsc_ret\")\")"
+            __bsc_ret="\$__r"
+            return 0 ;;
+
+        'char-alphabetic?')
+            __bsc_emit_expr "${__bs_car[$rest]}" "expr"
+            __bsc_ret="[[ \"$__bsc_ret\" =~ [a-zA-Z] ]]"
+            return 0 ;;
+
+        'char-numeric?')
+            __bsc_emit_expr "${__bs_car[$rest]}" "expr"
+            __bsc_ret="[[ \"$__bsc_ret\" =~ [0-9] ]]"
+            return 0 ;;
+
+        'char-word?')
+            __bsc_emit_expr "${__bs_car[$rest]}" "expr"
+            __bsc_ret="[[ \"$__bsc_ret\" =~ [a-zA-Z0-9_] ]]"
+            return 0 ;;
+    esac
+
+    __bsc_ret="\"\"  # unhandled char op: $op"
+}
+
+# ── Type predicates ───────────────────────────────────────────────────────────
+__bsc_emit_type_pred() {
+    local head="$1" rest="$2" mode="$3"
+    local op="${head:2}"
+    __bsc_emit_expr "${__bs_car[$rest]}" "expr"
+    local v="$__bsc_ret"
+
+    case "$op" in
+        'not')
+            __bsc_emit_test "${__bs_car[$rest]}"
+            if [[ "$mode" == "test" ]]; then
+                __bsc_ret="! $__bsc_ret"
+            else
+                # Statement context
+                __bsc_ret=""
+            fi
+            return 0 ;;
+        'null?')
+            local sv="$(__bsc_strip_dollar "$v")"
+            __bsc_ret="[[ \${#${sv}[@]} -eq 0 ]]"
+            return 0 ;;
+        'pair?'|'list?')
+            local sv="$(__bsc_strip_dollar "$v")"
+            __bsc_ret="[[ \${#${sv}[@]} -gt 0 ]]"
+            return 0 ;;
+        'number?')
+            __bsc_ret="[[ \"$v\" =~ ^-?[0-9]+\$ ]]"
+            return 0 ;;
+        'string?')
+            __bsc_ret="[[ -n \"$v\" ]]"
+            return 0 ;;
+        'boolean?')
+            __bsc_ret="[[ \"$v\" == \"0\" || \"$v\" == \"1\" ]]"
+            return 0 ;;
+        'vector?')
+            __bsc_ret="[[ -n \"$v\" ]]"
+            return 0 ;;
+        *)
+            __bsc_ret="true  # type pred: $op"
+            return 0 ;;
+    esac
+}
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Phase 3-4: Data structures — vectors, lists
+# ══════════════════════════════════════════════════════════════════════════════
+
+# ── Vector operations ─────────────────────────────────────────────────────────
+__bsc_emit_vector_op() {
+    local head="$1" rest="$2" mode="$3"
+    local op="${head:2}"
+
+    case "$op" in
+        'vector-ref')
+            __bsc_emit_expr "${__bs_car[$rest]}" "expr"
+            local vec="$(__bsc_strip_dollar "$__bsc_ret")"
+            __bsc_emit_arith_val "${__bs_car[${__bs_cdr[$rest]}]}"
+            local idx="$__bsc_ret"
+            __bsc_ret="\"\${${vec}[${idx}]}\""
+            return 0 ;;
+
+        'vector-ref-safe')
+            __bsc_emit_expr "${__bs_car[$rest]}" "expr"
+            local vec="$(__bsc_strip_dollar "$__bsc_ret")"
+            __bsc_emit_arith_val "${__bs_car[${__bs_cdr[$rest]}]}"
+            local idx="$__bsc_ret"
+            __bsc_ret="\"\${${vec}[${idx}]:-}\""
+            return 0 ;;
+
+        'vector-set!')
+            __bsc_emit_expr "${__bs_car[$rest]}" "expr"
+            local vec="$(__bsc_strip_dollar "$__bsc_ret")"
+            __bsc_emit_arith_val "${__bs_car[${__bs_cdr[$rest]}]}"
+            local idx="$__bsc_ret"
+            __bsc_emit_expr "${__bs_car[${__bs_cdr[${__bs_cdr[$rest]}]}]}" "expr"
+            local val="$__bsc_ret"
+            __bsc_line "${vec}[${idx}]=$val"
+            __bsc_ret=""
+            return 0 ;;
+
+        'vector-length')
+            __bsc_emit_expr "${__bs_car[$rest]}" "expr"
+            local vec="$(__bsc_strip_dollar "$__bsc_ret")"
+            __bsc_ret="\${#${vec}[@]}"
+            return 0 ;;
+
+        'make-vector')
+            __bsc_emit_arith_val "${__bs_car[$rest]}"
+            local n="$__bsc_ret"
+            local fill_e="${__bs_car[${__bs_cdr[$rest]}]:-}"
+            local fill='""'
+            if [[ -n "$fill_e" && "$fill_e" != 'n:()' ]]; then
+                __bsc_emit_expr "$fill_e" "expr"
+                fill="$__bsc_ret"
+            fi
+            # Emit as loop to fill array
+            __bsc_line "local -a __mv=()"
+            __bsc_line "for (( __i=0; __i<$n; __i++ )); do __mv+=($fill); done"
+            __bsc_ret='("${__mv[@]}")'
+            return 0 ;;
+
+        'vector')
+            __bsc_list_to_array "$rest"
+            local items=""
+            for elem in "${__bsc_list_result[@]}"; do
+                __bsc_emit_expr "$elem" "expr"
+                [[ -n "$items" ]] && items+=" "
+                items+="$__bsc_ret"
+            done
+            __bsc_ret="($items)"
+            return 0 ;;
+
+        'vector->list'|'list->vector')
+            __bsc_emit_expr "${__bs_car[$rest]}" "expr"
+            return 0 ;;  # arrays are arrays
+
+        'vector-insert')
+            # (vector-insert vec idx val) → splice val into array at idx
+            __bsc_emit_expr "${__bs_car[$rest]}" "expr"
+            local vec="$(__bsc_strip_dollar "$__bsc_ret")"
+            local rest2="${__bs_cdr[$rest]}"
+            __bsc_emit_arith_val "${__bs_car[$rest2]}"
+            local idx="$__bsc_ret"
+            __bsc_emit_expr "${__bs_car[${__bs_cdr[$rest2]}]}" "expr"
+            local val="$__bsc_ret"
+            # Quote bare $var refs for safe array embedding
+            if [[ "$val" == '$'* && "$val" != '"'* ]]; then
+                val="\"$val\""
+            fi
+            (( __bsc_vi_n = ${__bsc_vi_n:-0} + 1 )) || true
+            local tmp="__vi${__bsc_vi_n}"
+            local _lkw="local"
+            (( __bsc_in_func )) || _lkw="declare"
+            __bsc_line "$_lkw -i __vi_idx=\$(( $idx ))"
+            __bsc_line "$_lkw -a ${tmp}=(\"\${${vec}[@]:0:__vi_idx}\" $val \"\${${vec}[@]:__vi_idx}\")"
+            __bsc_ret="(\"\${${tmp}[@]}\")"
+            return 0 ;;
+
+        'vector-remove')
+            # (vector-remove vec idx) → remove element at idx
+            __bsc_emit_expr "${__bs_car[$rest]}" "expr"
+            local vec="$(__bsc_strip_dollar "$__bsc_ret")"
+            __bsc_emit_arith_val "${__bs_car[${__bs_cdr[$rest]}]}"
+            local idx="$__bsc_ret"
+            (( __bsc_vr_n = ${__bsc_vr_n:-0} + 1 )) || true
+            local tmp="__vr${__bsc_vr_n}"
+            local _lkw="local"
+            (( __bsc_in_func )) || _lkw="declare"
+            __bsc_line "$_lkw -i __vr_idx=\$(( $idx ))"
+            __bsc_line "$_lkw -a ${tmp}=(\"\${${vec}[@]:0:__vr_idx}\" \"\${${vec}[@]:__vr_idx+1}\")"
+            __bsc_ret="(\"\${${tmp}[@]}\")"
+            return 0 ;;
+    esac
+
+    __bsc_ret="# unhandled vector op: $op"
+}
+
+# ── List operations ───────────────────────────────────────────────────────────
+__bsc_emit_list_op() {
+    local head="$1" rest="$2" mode="$3"
+    local op="${head:2}"
+
+    case "$op" in
+        'cons')
+            __bsc_emit_expr "${__bs_car[$rest]}" "expr"
+            local car_v="$__bsc_ret"
+            __bsc_emit_expr "${__bs_car[${__bs_cdr[$rest]}]}" "expr"
+            local cdr_v="$__bsc_ret"
+            # Prepend to array — extract inner content from cdr
+            local _cdr_inner
+            if [[ "$cdr_v" == "("*")" ]]; then
+                # Strip outer parens: (...) → ...
+                _cdr_inner="${cdr_v:1:${#cdr_v}-2}"
+            elif [[ "$cdr_v" == "()" ]]; then
+                _cdr_inner=""
+            else
+                local cdr_s="$(__bsc_strip_dollar "$cdr_v")"
+                _cdr_inner="\"\${${cdr_s}[@]}\""
+            fi
+            # Quote bare $var references in car position
+            local _qcar="$car_v"
+            if [[ "$car_v" == '$'* && "$car_v" != '"'* && "$car_v" != '$('* ]]; then
+                _qcar="\"$car_v\""
+            fi
+            if [[ -n "$_cdr_inner" ]]; then
+                __bsc_ret="(${_qcar} ${_cdr_inner})"
+            else
+                __bsc_ret="(${_qcar})"
+            fi
+            return 0 ;;
+
+        'car')
+            __bsc_emit_expr "${__bs_car[$rest]}" "expr"
+            local lst="$(__bsc_strip_dollar "$__bsc_ret")"
+            __bsc_ret="\"\${${lst}[0]}\""
+            return 0 ;;
+
+        'cdr')
+            __bsc_emit_expr "${__bs_car[$rest]}" "expr"
+            local lst="$(__bsc_strip_dollar "$__bsc_ret")"
+            if [[ -n "${__bsc_pair_vars[$lst]:-}" ]]; then
+                # Pair: cdr returns second element as scalar
+                __bsc_ret="\"\${${lst}[1]}\""
+            else
+                __bsc_ret="(\"\${${lst}[@]:1}\")"
+            fi
+            return 0 ;;
+
+        'list')
+            __bsc_list_to_array "$rest"
+            (( __bsc_list_n = ${__bsc_list_n:-0} + 1 )) || true
+            local list_var="__lst${__bsc_list_n}"
+            # Evaluate all args into temp array
+            local _lkw="local"
+            (( __bsc_in_func )) || _lkw="declare"
+            __bsc_line "$_lkw -a ${list_var}=()"
+            for elem in "${__bsc_list_result[@]}"; do
+                __bsc_emit_expr "$elem" "expr"
+                local v="$__bsc_ret"
+                if [[ "$v" == "\$__r" ]]; then
+                    __bsc_line "${list_var}+=(\"\$__r\")"
+                elif [[ "$v" == '("'* || "$v" == '($'* ]]; then
+                    # Array ref — expand
+                    local sv="$(__bsc_strip_dollar "${v:1:${#v}-2}")"
+                    __bsc_line "${list_var}+=(\"\${${sv}[@]}\")"
+                elif [[ "$v" == "\$"* && "$v" == *"[@]"* ]]; then
+                    __bsc_line "${list_var}+=($v)"
+                else
+                    __bsc_line "${list_var}+=($v)"
+                fi
+            done
+            __bsc_ret="\"\${${list_var}[@]}\""
+            return 0 ;;
+
+        'length')
+            __bsc_emit_expr "${__bs_car[$rest]}" "expr"
+            __bsc_ensure_arr_var; local lst="$__bsc_arr_name"
+            __bsc_ret="\${#${lst}[@]}"
+            return 0 ;;
+
+        'null?')
+            __bsc_emit_expr "${__bs_car[$rest]}" "expr"
+            local lst="$(__bsc_strip_dollar "$__bsc_ret")"
+            __bsc_ret="[[ \${#${lst}[@]} -eq 0 ]]"
+            return 0 ;;
+
+        'append')
+            __bsc_list_to_array "$rest"
+            if (( ${#__bsc_list_result[@]} == 2 )); then
+                __bsc_emit_expr "${__bsc_list_result[0]}" "expr"
+                local _app_a="$__bsc_ret"
+                __bsc_emit_expr "${__bsc_list_result[1]}" "expr"
+                local _app_b="$__bsc_ret"
+                # Extract inner content (strip outer parens if present)
+                local _a_inner _b_inner
+                if [[ "$_app_a" == "("*")" ]]; then
+                    _a_inner="${_app_a:1:${#_app_a}-2}"
+                elif [[ "$_app_a" == *'[@]'* ]]; then
+                    _a_inner="$_app_a"
+                else
+                    local _a_s="$(__bsc_strip_dollar "$_app_a")"
+                    _a_inner="\"\${${_a_s}[@]}\""
+                fi
+                if [[ "$_app_b" == "("*")" ]]; then
+                    _b_inner="${_app_b:1:${#_app_b}-2}"
+                elif [[ "$_app_b" == *'[@]'* ]]; then
+                    _b_inner="$_app_b"
+                else
+                    local _b_s="$(__bsc_strip_dollar "$_app_b")"
+                    _b_inner="\"\${${_b_s}[@]}\""
+                fi
+                __bsc_ret="(${_a_inner} ${_b_inner})"
+            else
+                __bsc_emit_expr "${__bsc_list_result[0]}" "expr"
+                __bsc_ret="$__bsc_ret"
+            fi
+            return 0 ;;
+
+        'reverse')
+            __bsc_emit_expr "${__bs_car[$rest]}" "expr"
+            __bsc_ensure_arr_var; local lst="$__bsc_arr_name"
+            __bsc_line "local -a __rv=()"
+            __bsc_line "for __ri in \"\${${lst}[@]}\"; do __rv=(\"\$__ri\" \"\${__rv[@]}\"); done"
+            __bsc_ret='("${__rv[@]}")'
+            return 0 ;;
+
+        'list-ref')
+            __bsc_emit_expr "${__bs_car[$rest]}" "expr"
+            __bsc_ensure_arr_var; local lst="$__bsc_arr_name"
+            __bsc_emit_arith_val "${__bs_car[${__bs_cdr[$rest]}]}"
+            local idx="$__bsc_ret"
+            __bsc_ret="\"\${${lst}[${idx}]}\""
+            return 0 ;;
+
+        'list-tail')
+            __bsc_emit_expr "${__bs_car[$rest]}" "expr"
+            __bsc_ensure_arr_var; local lst="$__bsc_arr_name"
+            __bsc_emit_arith_val "${__bs_car[${__bs_cdr[$rest]}]}"
+            local idx="$__bsc_ret"
+            __bsc_ret="(\"\${${lst}[@]:${idx}}\")"
+            return 0 ;;
+    esac
+
+    __bsc_ret="# unhandled list op: $op"
+}
+
+# ── Higher-order: map, for-each, filter ───────────────────────────────────────
+__bsc_emit_higher_order() {
+    local head="$1" rest="$2" mode="$3"
+    local op="${head:2}"
+
+    local proc_e="${__bs_car[$rest]}"
+    local list_e="${__bs_car[${__bs_cdr[$rest]}]}"
+
+    __bsc_emit_expr "$list_e" "expr"
+    local lst="$(__bsc_strip_dollar "$__bsc_ret")"
+
+    # Check if proc is a lambda — inline it
+    if [[ "${proc_e:0:2}" == "p:" && "${__bs_car[$proc_e]}" == "y:lambda" ]]; then
+        local lam_rest="${__bs_cdr[$proc_e]}"
+        local lam_params="${__bs_car[$lam_rest]}"
+        local lam_body="${__bs_cdr[$lam_rest]}"
+        local param_name="${__bs_car[$lam_params]}"
+        __bsc_mangle "${param_name:2}"
+        local mparam="$__bsc_ret"
+
+        case "$op" in
+            'for-each')
+                __bsc_line "for $mparam in \"\${${lst}[@]}\"; do"
+                __bsc_push_indent
+                __bsc_emit_body "$lam_body"
+                __bsc_pop_indent
+                __bsc_line "done"
+                __bsc_ret=""
+                return 0 ;;
+            'map')
+                __bsc_line "local -a __map_r=()"
+                __bsc_line "for $mparam in \"\${${lst}[@]}\"; do"
+                __bsc_push_indent
+                __bsc_emit_body "$lam_body"
+                __bsc_line "__map_r+=(\"\$__r\")"
+                __bsc_pop_indent
+                __bsc_line "done"
+                __bsc_ret='("${__map_r[@]}")'
+                return 0 ;;
+            'filter')
+                __bsc_line "local -a __filt_r=()"
+                __bsc_line "for $mparam in \"\${${lst}[@]}\"; do"
+                __bsc_push_indent
+                __bsc_emit_body "$lam_body"
+                __bsc_line "[[ -n \"\$__r\" && \"\$__r\" != \"0\" ]] && __filt_r+=(\"\$$mparam\")"
+                __bsc_pop_indent
+                __bsc_line "done"
+                __bsc_ret='("${__filt_r[@]}")'
+                return 0 ;;
+        esac
+    fi
+
+    # Non-lambda proc: call it by name
+    if [[ "$proc_e" == y:* ]]; then
+        __bsc_mangle "${proc_e:2}"
+        local mproc="$__bsc_ret"
+        case "$op" in
+            'for-each')
+                __bsc_line "for __fe_item in \"\${${lst}[@]}\"; do"
+                __bsc_push_indent
+                __bsc_line "$mproc \"\$__fe_item\""
+                __bsc_pop_indent
+                __bsc_line "done"
+                __bsc_ret=""
+                return 0 ;;
+            'map')
+                __bsc_line "local -a __map_r=()"
+                __bsc_line "for __mp_item in \"\${${lst}[@]}\"; do"
+                __bsc_push_indent
+                __bsc_line "$mproc \"\$__mp_item\""
+                __bsc_line "__map_r+=(\"\$__r\")"
+                __bsc_pop_indent
+                __bsc_line "done"
+                __bsc_ret='("${__map_r[@]}")'
+                return 0 ;;
+            'filter')
+                __bsc_line "local -a __filt_r=()"
+                __bsc_line "for __fp_item in \"\${${lst}[@]}\"; do"
+                __bsc_push_indent
+                __bsc_line "$mproc \"\$__fp_item\""
+                __bsc_line "[[ -n \"\$__r\" && \"\$__r\" != \"0\" ]] && __filt_r+=(\"\$__fp_item\")"
+                __bsc_pop_indent
+                __bsc_line "done"
+                __bsc_ret='("${__filt_r[@]}")'
+                return 0 ;;
+        esac
+    fi
+
+    __bsc_ret="# unhandled higher-order: $op"
+}
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Phase 5: I/O operations
+# ══════════════════════════════════════════════════════════════════════════════
+
+# ── I/O ───────────────────────────────────────────────────────────────────────
+__bsc_emit_io() {
+    local head="$1" rest="$2" mode="$3"
+    local op="${head:2}"
+
+    case "$op" in
+        'display')
+            __bsc_emit_expr "${__bs_car[$rest]}" "expr"
+            __bsc_line "printf '%s' $__bsc_ret >&2"
+            __bsc_ret=""
+            return 0 ;;
+        'write')
+            __bsc_emit_expr "${__bs_car[$rest]}" "expr"
+            __bsc_line "printf '%s' $__bsc_ret >&2"
+            __bsc_ret=""
+            return 0 ;;
+        'newline')
+            __bsc_line "printf '\\n' >&2"
+            __bsc_ret=""
+            return 0 ;;
+        'write-stdout')
+            __bsc_emit_expr "${__bs_car[$rest]}" "expr"
+            __bsc_line "printf '%s' $__bsc_ret"
+            __bsc_ret=""
+            return 0 ;;
+        'read-byte')
+            __bsc_line "local __rb_ch"
+            __bsc_line "IFS= read -rsn1 -d '' __rb_ch"
+            __bsc_line "if [[ \$? -ne 0 && -z \"\$__rb_ch\" ]]; then"
+            __bsc_line "    __r=\"\""
+            __bsc_line "elif [[ -z \"\$__rb_ch\" ]]; then"
+            __bsc_line "    __r=0"
+            __bsc_line "else"
+            __bsc_line "    printf -v __r '%d' \"'\$__rb_ch\" 2>/dev/null || __r=0"
+            __bsc_line "fi"
+            __bsc_ret="\$__r"
+            return 0 ;;
+        'read-byte-timeout')
+            __bsc_emit_expr "${__bs_car[$rest]}" "expr"
+            local timeout="$__bsc_ret"
+            __bsc_line "local __rb_ch"
+            __bsc_line "IFS= read -rsn1 -d '' -t $timeout __rb_ch"
+            __bsc_line "if [[ \$? -ne 0 && -z \"\$__rb_ch\" ]]; then"
+            __bsc_line "    __r=\"\""
+            __bsc_line "elif [[ -z \"\$__rb_ch\" ]]; then"
+            __bsc_line "    __r=0"
+            __bsc_line "else"
+            __bsc_line "    printf -v __r '%d' \"'\$__rb_ch\" 2>/dev/null || __r=0"
+            __bsc_line "fi"
+            __bsc_ret="\$__r"
+            return 0 ;;
+        'read-line')
+            __bsc_line "IFS= read -r __r"
+            __bsc_ret="\$__r"
+            return 0 ;;
+    esac
+
+    __bsc_ret="# unhandled io: $op"
+}
+
+# ── Terminal ──────────────────────────────────────────────────────────────────
+__bsc_emit_terminal() {
+    local head="$1" rest="$2" mode="$3"
+    local op="${head:2}"
+
+    case "$op" in
+        'terminal-size')
+            __bsc_line "local __ts_rows __ts_cols"
+            __bsc_line "if [[ -n \"\${LINES:-}\" && -n \"\${COLUMNS:-}\" ]]; then"
+            __bsc_line "    __ts_rows=\$LINES; __ts_cols=\$COLUMNS"
+            __bsc_line "else"
+            __bsc_line "    __ts_rows=\$(tput lines 2>/dev/null) || __ts_rows=0"
+            __bsc_line "    __ts_cols=\$(tput cols 2>/dev/null) || __ts_cols=0"
+            __bsc_line "fi"
+            __bsc_line "if (( __ts_rows <= 0 || __ts_cols <= 0 )); then"
+            __bsc_line "    local __ts_sz; __ts_sz=\$(stty size 2>/dev/null) || __ts_sz=\"0 0\""
+            __bsc_line "    (( __ts_rows <= 0 )) && __ts_rows=\"\${__ts_sz%% *}\""
+            __bsc_line "    (( __ts_cols <= 0 )) && __ts_cols=\"\${__ts_sz##* }\""
+            __bsc_line "fi"
+            __bsc_line "(( __ts_rows <= 0 )) && __ts_rows=24"
+            __bsc_line "(( __ts_cols <= 0 )) && __ts_cols=80"
+            # Return as a 2-element array pair
+            __bsc_line "__r=(\$__ts_rows \$__ts_cols)"
+            __bsc_ret='("${__r[@]}")'
+            __bsc_is_pair=1
+            return 0 ;;
+        'terminal-raw!')
+            __bsc_line "__bsc_stty_saved=\$(stty -g 2>/dev/null)"
+            __bsc_line "stty raw -echo -isig -ixon -ixoff -icrnl intr undef quit undef susp undef lnext undef 2>/dev/null"
+            __bsc_line "stty dsusp undef 2>/dev/null || true"
+            __bsc_ret=""
+            return 0 ;;
+        'terminal-restore!')
+            __bsc_line "if [[ -n \"\${__bsc_stty_saved:-}\" ]]; then"
+            __bsc_line "    stty \"\$__bsc_stty_saved\" 2>/dev/null || stty sane 2>/dev/null"
+            __bsc_line "    __bsc_stty_saved=\"\""
+            __bsc_line "fi"
+            __bsc_ret=""
+            return 0 ;;
+        'terminal-suspend!')
+            __bsc_line "kill -TSTP \$\$ 2>/dev/null"
+            __bsc_ret=""
+            return 0 ;;
+    esac
+
+    __bsc_ret="# unhandled terminal: $op"
+}
+
+# ── File I/O ──────────────────────────────────────────────────────────────────
+__bsc_emit_file_op() {
+    local head="$1" rest="$2" mode="$3"
+    local op="${head:2}"
+
+    case "$op" in
+        'file-read')
+            __bsc_emit_expr "${__bs_car[$rest]}" "expr"
+            local path="$__bsc_ret"
+            __bsc_line "if [[ -f $path ]]; then"
+            __bsc_line "    __r=\$(cat $path 2>/dev/null) || __r=\"\""
+            __bsc_line "else"
+            __bsc_line "    __r=\"\""
+            __bsc_line "fi"
+            __bsc_ret="\$__r"
+            return 0 ;;
+        'file-write')
+            __bsc_emit_expr "${__bs_car[$rest]}" "expr"
+            local path="$__bsc_ret"
+            __bsc_emit_expr "${__bs_car[${__bs_cdr[$rest]}]}" "expr"
+            local content="$__bsc_ret"
+            __bsc_line "{ printf '%s\\n' \"$content\" > \"$path\"; } 2>/dev/null && __r=1 || __r=0"
+            __bsc_ret="\$__r"
+            return 0 ;;
+        'file-write-atomic')
+            __bsc_emit_expr "${__bs_car[$rest]}" "expr"
+            local path="$__bsc_ret"
+            __bsc_emit_expr "${__bs_car[${__bs_cdr[$rest]}]}" "expr"
+            local content="$__bsc_ret"
+            __bsc_line "local __fwa_tmp=\"${path}.em\$\$\""
+            __bsc_line "if { printf '%s\\n' \"$content\" > \"\$__fwa_tmp\"; } 2>/dev/null && mv -f \"\$__fwa_tmp\" \"$path\" 2>/dev/null; then"
+            __bsc_line "    __r=1"
+            __bsc_line "else"
+            __bsc_line "    rm -f \"\$__fwa_tmp\" 2>/dev/null; __r=0"
+            __bsc_line "fi"
+            __bsc_ret="\$__r"
+            return 0 ;;
+        'file-glob')
+            __bsc_emit_expr "${__bs_car[$rest]}" "expr"
+            local pat="$__bsc_ret"
+            __bsc_line "local -a __fg=()"
+            __bsc_line "for __fgf in \${${pat}}*; do [[ -e \"\$__fgf\" ]] && __fg+=(\"\$__fgf\"); done"
+            __bsc_ret='("${__fg[@]}")'
+            return 0 ;;
+        'file-directory?')
+            __bsc_emit_expr "${__bs_car[$rest]}" "expr"
+            __bsc_ret="[[ -d $__bsc_ret ]]"
+            return 0 ;;
+    esac
+
+    __bsc_ret="# unhandled file op: $op"
+}
+
+# ── Shell operations ──────────────────────────────────────────────────────────
+__bsc_emit_shell_op() {
+    local head="$1" rest="$2" mode="$3"
+    local op="${head:2}"
+
+    case "$op" in
+        'shell-capture')
+            __bsc_emit_expr "${__bs_car[$rest]}" "expr"
+            __bsc_line "__r=\$(eval $__bsc_ret 2>/dev/null) || __r=\"0\""
+            __bsc_ret="\$__r"
+            return 0 ;;
+        'shell-exec')
+            __bsc_emit_expr "${__bs_car[$rest]}" "expr"
+            local cmd="$__bsc_ret"
+            __bsc_emit_expr "${__bs_car[${__bs_cdr[$rest]}]}" "expr"
+            local input="$__bsc_ret"
+            __bsc_line "printf '%s' $input | eval $cmd 2>/dev/null"
+            __bsc_line "[[ \$? -eq 0 ]] && __r=1 || __r=0"
+            __bsc_ret="\$__r"
+            return 0 ;;
+    esac
+
+    __bsc_ret="# unhandled shell op: $op"
+}
+
+# ── Eval-string ───────────────────────────────────────────────────────────────
+__bsc_emit_eval_string() {
+    local rest="$1" mode="$2"
+    __bsc_emit_expr "${__bs_car[$rest]}" "expr"
+    # eval-string needs the interpreter; emit a call to bs() and return (ok? . display)
+    __bsc_line "if bs $__bsc_ret 2>/dev/null; then"
+    __bsc_line "    __r=(1 \"\$__bs_last_display\")"
+    __bsc_line "else"
+    __bsc_line "    __r=(0 \"\${__bs_last_error:-error}\")"
+    __bsc_line "fi"
+    __bsc_ret='("${__r[@]}")'
+    __bsc_is_pair=1
+}
+
+# ══════════════════════════════════════════════════════════════════════════════
+# bs-compile: Public entry point
+# ══════════════════════════════════════════════════════════════════════════════
+bs-compile() {
+    local _src="$1"
+    local _bs_old_opts=""
+    [[ $- == *e* ]] && _bs_old_opts="e" && set +e
+
+    # Reset compiler state
+    __bsc_out=""
+    __bsc_indent=""
+    __bsc_globals=()
+    __bsc_funcs=()
+    __bsc_int_vars=()
+    __bsc_pair_vars=()
+    __bsc_arr_vars=()
+
+    # Emit header
+    __bsc_line "#!/usr/bin/env bash"
+    __bsc_line "# Generated by bs-compile (sheme AOT compiler)"
+    __bsc_line "# Source: Scheme → Bash transpilation"
+    __bsc_line ""
+    __bsc_line "# Return value convention: \$__r for function results"
+    __bsc_line "declare -g __r=\"\" __bsc_stty_saved=\"\""
+    __bsc_line ""
+    # Mark builtins that have Scheme user-defined versions — skip those defines
+    __bsc_funcs["string_repeat"]=1
+    __bsc_funcs["vector_insert"]=1
+    __bsc_funcs["vector_remove"]=1
+    __bsc_funcs["em_undo_push"]=1
+    __bsc_funcs["em_undo"]=1
+    __bsc_funcs["em_lines_list"]=1
+    __bsc_funcs["em_make_buffer"]=1
+    __bsc_funcs["em_find_buffer_by_id"]=1
+    __bsc_funcs["em_find_buffer_by_name"]=1
+    __bsc_funcs["em_find_buffer_by_filename"]=1
+    __bsc_funcs["em_save_buffer_state"]=1
+    __bsc_funcs["em_restore_buffer_state"]=1
+    __bsc_funcs["em_new_buffer"]=1
+    __bsc_funcs["em_buf_update_name"]=1
+    __bsc_funcs["em_do_switch_buffer"]=1
+    __bsc_funcs["em_do_kill_buffer"]=1
+    __bsc_funcs["em_list_buffers"]=1
+    __bsc_funcs["em_complete_buffer"]=1
+    __bsc_funcs["em_do_quit"]=1
+
+    __bsc_line "# Runtime helper: string-repeat"
+    __bsc_line "string_repeat() {"
+    __bsc_line "    local s=\"\$1\" n=\"\$2\" r=\"\""
+    __bsc_line "    for (( __i=0; __i<n; __i++ )); do r+=\"\$s\"; done"
+    __bsc_line "    __r=\"\$r\""
+    __bsc_line "}"
+    __bsc_line ""
+
+    # Runtime helper: em_undo_push — packs record fields with US delimiter
+    # For replace_region, the last args (saved lines) are packed with RS sub-delimiter
+    __bsc_line "# Runtime helper: em_undo_push"
+    __bsc_line 'em_undo_push() {'
+    __bsc_line '    local US=$'"'"'\x1f'"'"' RS=$'"'"'\x1e'"'"''
+    __bsc_line '    local type="$1"'
+    __bsc_line '    if [[ "$type" == "replace_region" ]]; then'
+    __bsc_line '        local record="${1}${US}${2}${US}${3}${US}${4}${US}${5}"'
+    __bsc_line '        shift 5'
+    __bsc_line '        local packed=""'
+    __bsc_line '        for __ul in "$@"; do'
+    __bsc_line '            [[ -n "$packed" ]] && packed+="$RS"'
+    __bsc_line '            packed+="$__ul"'
+    __bsc_line '        done'
+    __bsc_line '        record+="${US}${packed}"'
+    __bsc_line '    else'
+    __bsc_line '        local record="$1"; shift'
+    __bsc_line '        for __ul in "$@"; do record+="${US}${__ul}"; done'
+    __bsc_line '    fi'
+    __bsc_line '    em_undo_stack=("$record" "${em_undo_stack[@]}")'
+    __bsc_line '    (( ${#em_undo_stack[@]} > 200 )) && em_undo_stack=("${em_undo_stack[@]:0:200}")'
+    __bsc_line '}'
+    __bsc_line ''
+
+    # Runtime helper: em_undo — unpacks record and applies undo operation
+    __bsc_line '# Runtime helper: em_undo'
+    __bsc_line 'em_undo() {'
+    __bsc_line '    local US=$'"'"'\x1f'"'"' RS=$'"'"'\x1e'"'"''
+    __bsc_line '    if (( ${#em_undo_stack[@]} == 0 )); then'
+    __bsc_line '        em_message="No further undo information"; return'
+    __bsc_line '    fi'
+    __bsc_line '    local __rec="${em_undo_stack[0]}"'
+    __bsc_line '    em_undo_stack=("${em_undo_stack[@]:1}")'
+    __bsc_line '    local -a __f=()'
+    __bsc_line '    while [[ "$__rec" == *"$US"* ]]; do'
+    __bsc_line '        __f+=("${__rec%%"$US"*}"); __rec="${__rec#*"$US"}"'
+    __bsc_line '    done'
+    __bsc_line '    __f+=("$__rec")'
+    __bsc_line '    local __type="${__f[0]}"'
+    __bsc_line '    case "$__type" in'
+    __bsc_line '        insert_char)'
+    __bsc_line '            local -i __y=${__f[1]} __x=${__f[2]}'
+    __bsc_line '            local __ch="${__f[3]}" __ln="${em_lines[__y]:-}"'
+    __bsc_line '            em_lines[__y]="${__ln:0:__x}${__ch}${__ln:__x}"'
+    __bsc_line '            em_cy=$__y; em_cx=$__x ;;'
+    __bsc_line '        delete_char)'
+    __bsc_line '            local -i __y=${__f[1]} __x=${__f[2]}'
+    __bsc_line '            local __ln="${em_lines[__y]:-}"'
+    __bsc_line '            em_lines[__y]="${__ln:0:__x}${__ln:__x+1}"'
+    __bsc_line '            em_cy=$__y; em_cx=$__x ;;'
+    __bsc_line '        join_lines)'
+    __bsc_line '            local -i __y=${__f[1]} __x=${__f[2]}'
+    __bsc_line '            local __ln="${em_lines[__y]:-}"'
+    __bsc_line '            em_lines[__y]="${__ln:0:__x}"'
+    __bsc_line '            local -i __idx=__y+1'
+    __bsc_line '            em_lines=("${em_lines[@]:0:__idx}" "${__ln:__x}" "${em_lines[@]:__idx}")'
+    __bsc_line '            (( em_nlines++ )) || true'
+    __bsc_line '            em_cy=$__y; em_cx=$__x ;;'
+    __bsc_line '        split_line)'
+    __bsc_line '            local -i __y=${__f[1]} __x=${__f[2]}'
+    __bsc_line '            local __ln="${em_lines[__y]:-}" __nx="${em_lines[__y+1]:-}"'
+    __bsc_line '            em_lines[__y]="${__ln}${__nx}"'
+    __bsc_line '            local -i __idx=__y+1'
+    __bsc_line '            em_lines=("${em_lines[@]:0:__idx}" "${em_lines[@]:__idx+1}")'
+    __bsc_line '            (( em_nlines-- )) || true'
+    __bsc_line '            em_cy=$__y; em_cx=$__x ;;'
+    __bsc_line '        replace_line)'
+    __bsc_line '            local -i __y=${__f[1]} __x=${__f[2]}'
+    __bsc_line '            em_lines[__y]="${__f[3]}"'
+    __bsc_line '            em_cy=$__y; em_cx=$__x ;;'
+    __bsc_line '        replace_region)'
+    __bsc_line '            local -i __sy=${__f[1]} __nc=${__f[2]} __scy=${__f[3]} __scx=${__f[4]}'
+    __bsc_line '            local __pk="${__f[5]}"'
+    __bsc_line '            local -a __sv=()'
+    __bsc_line '            while [[ "$__pk" == *"$RS"* ]]; do'
+    __bsc_line '                __sv+=("${__pk%%"$RS"*}"); __pk="${__pk#*"$RS"}"'
+    __bsc_line '            done'
+    __bsc_line '            __sv+=("$__pk")'
+    __bsc_line '            local -i __i'
+    __bsc_line '            for (( __i=0; __i<__nc && em_nlines>0; __i++ )); do'
+    __bsc_line '                em_lines=("${em_lines[@]:0:__sy}" "${em_lines[@]:__sy+1}")'
+    __bsc_line '                (( em_nlines-- )) || true'
+    __bsc_line '            done'
+    __bsc_line '            for (( __i=0; __i<${#__sv[@]}; __i++ )); do'
+    __bsc_line '                local -i __idx=__sy+__i'
+    __bsc_line '                em_lines=("${em_lines[@]:0:__idx}" "${__sv[__i]}" "${em_lines[@]:__idx}")'
+    __bsc_line '                (( em_nlines++ )) || true'
+    __bsc_line '            done'
+    __bsc_line '            (( em_nlines == 0 )) && { em_lines=(""); em_nlines=1; }'
+    __bsc_line '            em_cy=$__scy; em_cx=$__scx ;;'
+    __bsc_line '    esac'
+    __bsc_line '    em_modified=1'
+    __bsc_line '    em_ensure_visible'
+    __bsc_line '    em_message="Undo!"'
+    __bsc_line '}'
+    __bsc_line ''
+
+    # Runtime helper: em_lines_list — collect lines sy..ey into array
+    __bsc_line '# Runtime helper: em_lines_list'
+    __bsc_line 'em_lines_list() {'
+    __bsc_line '    local -i __sy=$1 __ey=$2'
+    __bsc_line '    __r=("${em_lines[@]:__sy:__ey-__sy+1}")'
+    __bsc_line '}'
+    __bsc_line ''
+
+    # ── Buffer system runtime helpers ────────────────────────────────────
+    # Uses an associative array em_bufs with keys like "${id}_field"
+    # em_buf_ids tracks known buffer IDs as a regular array
+    __bsc_line '# Buffer system: uses em_bufs associative array for nested state'
+    __bsc_line 'declare -gA em_bufs=()'
+    __bsc_line 'declare -ga em_buf_ids=()'
+    __bsc_line ''
+
+    __bsc_line 'em_make_buffer() {'
+    __bsc_line '    local -i id=$1; local name="$2" filename="$3"'
+    __bsc_line '    em_bufs["${id}_name"]="$name"'
+    __bsc_line '    em_bufs["${id}_filename"]="$filename"'
+    __bsc_line '    em_bufs["${id}_nlines"]=1'
+    __bsc_line '    em_bufs["${id}_line_0"]=""'
+    __bsc_line '    em_bufs["${id}_cy"]=0; em_bufs["${id}_cx"]=0'
+    __bsc_line '    em_bufs["${id}_top"]=0; em_bufs["${id}_left"]=0'
+    __bsc_line '    em_bufs["${id}_modified"]=0'
+    __bsc_line '    em_bufs["${id}_goal_col"]=-1'
+    __bsc_line '    em_bufs["${id}_mark_y"]=-1; em_bufs["${id}_mark_x"]=-1'
+    __bsc_line '    em_bufs["${id}_undo"]=""'
+    __bsc_line '    em_bufs["${id}_kill"]=""'
+    __bsc_line '    __r=$id'
+    __bsc_line '}'
+    __bsc_line ''
+
+    __bsc_line 'em_find_buffer_by_id() {'
+    __bsc_line '    local -i id=$1 bid'
+    __bsc_line '    for bid in "${em_buf_ids[@]}"; do'
+    __bsc_line '        if (( bid == id )); then __r=$bid; return 0; fi'
+    __bsc_line '    done'
+    __bsc_line '    __r=0; return 1'
+    __bsc_line '}'
+    __bsc_line ''
+
+    __bsc_line 'em_find_buffer_by_name() {'
+    __bsc_line '    local target="$1" bid'
+    __bsc_line '    for bid in "${em_buf_ids[@]}"; do'
+    __bsc_line '        if [[ "${em_bufs["${bid}_name"]}" == "$target" ]]; then __r=$bid; return 0; fi'
+    __bsc_line '    done'
+    __bsc_line '    __r=0; return 1'
+    __bsc_line '}'
+    __bsc_line ''
+
+    __bsc_line 'em_find_buffer_by_filename() {'
+    __bsc_line '    local target="$1" bid'
+    __bsc_line '    for bid in "${em_buf_ids[@]}"; do'
+    __bsc_line '        if [[ "${em_bufs["${bid}_filename"]}" == "$target" ]]; then __r=$bid; return 0; fi'
+    __bsc_line '    done'
+    __bsc_line '    __r=0; return 1'
+    __bsc_line '}'
+    __bsc_line ''
+
+    __bsc_line 'em_save_buffer_state() {'
+    __bsc_line '    local -i bid=$em_cur_buf_id'
+    __bsc_line '    em_bufs["${bid}_name"]="$em_bufname"'
+    __bsc_line '    em_bufs["${bid}_filename"]="$em_filename"'
+    __bsc_line '    em_bufs["${bid}_nlines"]=$em_nlines'
+    __bsc_line '    em_bufs["${bid}_cy"]=$em_cy; em_bufs["${bid}_cx"]=$em_cx'
+    __bsc_line '    em_bufs["${bid}_top"]=$em_scroll_top; em_bufs["${bid}_left"]=$em_left'
+    __bsc_line '    em_bufs["${bid}_modified"]=$em_modified'
+    __bsc_line '    em_bufs["${bid}_goal_col"]=$em_goal_col'
+    __bsc_line '    em_bufs["${bid}_mark_y"]=$em_mark_y; em_bufs["${bid}_mark_x"]=$em_mark_x'
+    __bsc_line '    local -i __i old_n=${em_bufs["${bid}_old_nlines"]:-0}'
+    __bsc_line '    for (( __i=em_nlines; __i<old_n; __i++ )); do'
+    __bsc_line '        unset "em_bufs[${bid}_line_${__i}]" 2>/dev/null'
+    __bsc_line '    done'
+    __bsc_line '    em_bufs["${bid}_old_nlines"]=$em_nlines'
+    __bsc_line '    for (( __i=0; __i<em_nlines; __i++ )); do'
+    __bsc_line '        em_bufs["${bid}_line_${__i}"]="${em_lines[__i]}"'
+    __bsc_line '    done'
+    __bsc_line '    local GS=$'"'"'\x1d'"'"''
+    __bsc_line '    local __us="" __rec; for __rec in "${em_undo_stack[@]}"; do'
+    __bsc_line '        [[ -n "$__us" ]] && __us+="$GS"; __us+="$__rec"'
+    __bsc_line '    done'
+    __bsc_line '    em_bufs["${bid}_undo"]="$__us"'
+    __bsc_line '    local __ks="" __kr; for __kr in "${em_kill_ring[@]}"; do'
+    __bsc_line '        [[ -n "$__ks" ]] && __ks+="$GS"; __ks+="$__kr"'
+    __bsc_line '    done'
+    __bsc_line '    em_bufs["${bid}_kill"]="$__ks"'
+    __bsc_line '}'
+    __bsc_line ''
+
+    __bsc_line 'em_restore_buffer_state() {'
+    __bsc_line '    local -i bid=$1'
+    __bsc_line '    em_cur_buf_id=$bid'
+    __bsc_line '    em_bufname="${em_bufs["${bid}_name"]}"'
+    __bsc_line '    em_filename="${em_bufs["${bid}_filename"]}"'
+    __bsc_line '    em_nlines=${em_bufs["${bid}_nlines"]:-1}'
+    __bsc_line '    em_cy=${em_bufs["${bid}_cy"]:-0}; em_cx=${em_bufs["${bid}_cx"]:-0}'
+    __bsc_line '    em_scroll_top=${em_bufs["${bid}_top"]:-0}; em_left=${em_bufs["${bid}_left"]:-0}'
+    __bsc_line '    em_modified=${em_bufs["${bid}_modified"]:-0}'
+    __bsc_line '    em_goal_col=${em_bufs["${bid}_goal_col"]:-"-1"}'
+    __bsc_line '    em_mark_y=${em_bufs["${bid}_mark_y"]:-"-1"}; em_mark_x=${em_bufs["${bid}_mark_x"]:-"-1"}'
+    __bsc_line '    em_lines=()'
+    __bsc_line '    local -i __i __nl=$em_nlines'
+    __bsc_line '    for (( __i=0; __i<__nl; __i++ )); do'
+    __bsc_line '        em_lines+=("${em_bufs["${bid}_line_${__i}"]}")'
+    __bsc_line '    done'
+    __bsc_line '    [[ ${#em_lines[@]} -eq 0 ]] && em_lines=("")'
+    __bsc_line '    local GS=$'"'"'\x1d'"'"''
+    __bsc_line '    em_undo_stack=()'
+    __bsc_line '    local __us="${em_bufs["${bid}_undo"]}"'
+    __bsc_line '    if [[ -n "$__us" ]]; then'
+    __bsc_line '        while [[ "$__us" == *"$GS"* ]]; do'
+    __bsc_line '            em_undo_stack+=("${__us%%"$GS"*}"); __us="${__us#*"$GS"}"'
+    __bsc_line '        done'
+    __bsc_line '        em_undo_stack+=("$__us")'
+    __bsc_line '    fi'
+    __bsc_line '    em_kill_ring=()'
+    __bsc_line '    local __ks="${em_bufs["${bid}_kill"]}"'
+    __bsc_line '    if [[ -n "$__ks" ]]; then'
+    __bsc_line '        while [[ "$__ks" == *"$GS"* ]]; do'
+    __bsc_line '            em_kill_ring+=("${__ks%%"$GS"*}"); __ks="${__ks#*"$GS"}"'
+    __bsc_line '        done'
+    __bsc_line '        em_kill_ring+=("$__ks")'
+    __bsc_line '    fi'
+    __bsc_line '}'
+    __bsc_line ''
+
+    __bsc_line 'em_new_buffer() {'
+    __bsc_line '    local name="$1" filename="$2"'
+    __bsc_line '    (( em_buf_id_counter++ )) || true'
+    __bsc_line '    em_make_buffer $em_buf_id_counter "$name" "$filename"'
+    __bsc_line '    em_buf_ids+=($em_buf_id_counter)'
+    __bsc_line '    em_cur_buf_id=$em_buf_id_counter'
+    __bsc_line '    em_bufname="$name"; em_filename="$filename"'
+    __bsc_line '    em_lines=(""); em_nlines=1'
+    __bsc_line '    em_cy=0; em_cx=0; em_scroll_top=0; em_left=0'
+    __bsc_line '    em_modified=0; em_goal_col=-1'
+    __bsc_line '    em_mark_y=-1; em_mark_x=-1'
+    __bsc_line '    em_undo_stack=(); em_kill_ring=()'
+    __bsc_line '    __r=$em_buf_id_counter'
+    __bsc_line '}'
+    __bsc_line ''
+
+    __bsc_line 'em_buf_update_name() {'
+    __bsc_line '    local name="$1" filename="$2"'
+    __bsc_line '    em_bufs["${em_cur_buf_id}_name"]="$name"'
+    __bsc_line '    em_bufs["${em_cur_buf_id}_filename"]="$filename"'
+    __bsc_line '}'
+    __bsc_line ''
+
+    __bsc_line 'em_do_switch_buffer() {'
+    __bsc_line '    local target="$1"'
+    __bsc_line '    [[ -z "$target" ]] && target="$em_bufname"'
+    __bsc_line '    if em_find_buffer_by_name "$target"; then'
+    __bsc_line '        local -i __bid=$__r'
+    __bsc_line '        em_save_buffer_state'
+    __bsc_line '        em_restore_buffer_state $__bid'
+    __bsc_line '        em_message="$em_bufname"'
+    __bsc_line '    else'
+    __bsc_line '        em_message="No buffer named '"'"'${target}'"'"'"'
+    __bsc_line '    fi'
+    __bsc_line '}'
+    __bsc_line ''
+
+    __bsc_line 'em_do_kill_buffer() {'
+    __bsc_line '    local target="$1"'
+    __bsc_line '    [[ -z "$target" ]] && target="$em_bufname"'
+    __bsc_line '    if (( ${#em_buf_ids[@]} <= 1 )); then'
+    __bsc_line '        em_message="Cannot kill the only buffer"; return'
+    __bsc_line '    fi'
+    __bsc_line '    if ! em_find_buffer_by_name "$target"; then'
+    __bsc_line '        em_message="No buffer named '"'"'${target}'"'"'"; return'
+    __bsc_line '    fi'
+    __bsc_line '    local -i __bid=$__r __is_cur=0'
+    __bsc_line '    (( __bid == em_cur_buf_id )) && __is_cur=1'
+    __bsc_line '    local -a __new_ids=()'
+    __bsc_line '    local __b; for __b in "${em_buf_ids[@]}"; do'
+    __bsc_line '        (( __b != __bid )) && __new_ids+=($__b)'
+    __bsc_line '    done'
+    __bsc_line '    em_buf_ids=("${__new_ids[@]}")'
+    __bsc_line '    if (( __is_cur )); then'
+    __bsc_line '        em_restore_buffer_state ${em_buf_ids[0]}'
+    __bsc_line '    fi'
+    __bsc_line '    em_message="Killed buffer '"'"'${target}'"'"'"'
+    __bsc_line '}'
+    __bsc_line ''
+
+    __bsc_line 'em_list_buffers() {'
+    __bsc_line '    em_save_buffer_state'
+    __bsc_line '    local -a __bl=(" MR  Buffer               Size    File"'
+    __bsc_line '                   " --  --------------------  ----    ----")'
+    __bsc_line '    local __b; for __b in "${em_buf_ids[@]}"; do'
+    __bsc_line '        local __bn="${em_bufs["${__b}_name"]}" __bf="${em_bufs["${__b}_filename"]}"'
+    __bsc_line '        local __bm=${em_bufs["${__b}_modified"]:-0} __bnl=${em_bufs["${__b}_nlines"]:-1}'
+    __bsc_line '        local __cur=" " __mod=" "'
+    __bsc_line '        (( __b == em_cur_buf_id )) && __cur="."'
+    __bsc_line '        (( __bm == 1 )) && __mod="*"'
+    __bsc_line '        string_repeat " " $(( 20 - ${#__bn} ))'
+    __bsc_line '        local __pad="$__r"'
+    __bsc_line '        __bl+=(" ${__cur}${__mod}  ${__bn}${__pad}  ${__bnl}    ${__bf}")'
+    __bsc_line '    done'
+    __bsc_line '    __bl+=("" "[Press C-g or q to return]")'
+    __bsc_line '    local -a __save_lines=("${em_lines[@]}")'
+    __bsc_line '    local -i __save_nlines=$em_nlines __save_cy=$em_cy __save_cx=$em_cx __save_top=$em_scroll_top'
+    __bsc_line '    local __save_mod=$em_modified __save_name="$em_bufname" __save_file="$em_filename"'
+    __bsc_line '    em_lines=("${__bl[@]}"); em_nlines=${#__bl[@]}'
+    __bsc_line '    em_cy=0; em_cx=0; em_scroll_top=0'
+    __bsc_line '    em_bufname="*Buffer List*"; em_filename=""; em_modified=0; em_message=""'
+    __bsc_line '    while true; do'
+    __bsc_line '        em_render'
+    __bsc_line '        em_read_key'
+    __bsc_line '        local __k="$__r"'
+    __bsc_line '        case "$__k" in'
+    __bsc_line '            C-g|SELF:q) break ;;'
+    __bsc_line '            C-n|DOWN) em_next_line ;;'
+    __bsc_line '            C-p|UP) em_previous_line ;;'
+    __bsc_line '            C-v|PGDN) em_scroll_down ;;'
+    __bsc_line '            M-v|PGUP) em_scroll_up ;;'
+    __bsc_line '        esac'
+    __bsc_line '    done'
+    __bsc_line '    em_restore_buffer_state $em_cur_buf_id'
+    __bsc_line '    em_message=""'
+    __bsc_line '}'
+    __bsc_line ''
+
+    __bsc_line 'em_complete_buffer() {'
+    __bsc_line '    local input="$1" __b'
+    __bsc_line '    __r=()'
+    __bsc_line '    for __b in "${em_buf_ids[@]}"; do'
+    __bsc_line '        local __bn="${em_bufs["${__b}_name"]}"'
+    __bsc_line '        if [[ -z "$input" || "$__bn" == "$input"* ]]; then'
+    __bsc_line '            __r+=("$__bn")'
+    __bsc_line '        fi'
+    __bsc_line '    done'
+    __bsc_line '}'
+    __bsc_line ''
+
+    __bsc_line 'em_do_quit() {'
+    __bsc_line '    em_save_buffer_state'
+    __bsc_line '    local -i __unsaved=0 __b'
+    __bsc_line '    for __b in "${em_buf_ids[@]}"; do'
+    __bsc_line '        if (( ${em_bufs["${__b}_modified"]:-0} == 1 )) && [[ "${em_bufs["${__b}_name"]}" != "*scratch*" ]]; then'
+    __bsc_line '            (( __unsaved++ )) || true'
+    __bsc_line '        fi'
+    __bsc_line '    done'
+    __bsc_line '    if (( __unsaved > 0 )); then'
+    __bsc_line '        em_minibuffer_start "${__unsaved} modified buffer(s) not saved; exit anyway? (yes or no) " "quit-confirm"'
+    __bsc_line '    else'
+    __bsc_line '        em_running=0'
+    __bsc_line '    fi'
+    __bsc_line '}'
+    __bsc_line ''
+
+    # Parse and compile all top-level forms
+    __bs_tokenize "$_src"
+    __bs_tpos=0
+    while (( __bs_tpos < ${#__bs_tokens[@]} )); do
+        __bs_parse_expr || break
+        local parsed="$__bs_ret"
+        __bsc_emit_expr "$parsed" "stmt"
+        # If there's a leftover expression result, emit it
+        [[ -n "$__bsc_ret" && "$__bsc_ret" != "" ]] && __bsc_line "$__bsc_ret"
+    done
+
+    # Output the result
+    printf '%s' "$__bsc_out"
+
+    [[ -n "$_bs_old_opts" ]] && set -e
+    return 0
 }
