@@ -62,6 +62,15 @@ make example
 | `make release BUMP=minor` | Same, but bump minor version |
 | `make release BUMP=major` | Same, but bump major version |
 
+## Contributor Pre-Push Checks
+
+Before every push, run and pass these targets in both bash and zsh shells:
+
+```bash
+make test
+make example
+```
+
 ## Terminal I/O Builtins
 
 sheme provides terminal I/O primitives as builtins, enabling Scheme

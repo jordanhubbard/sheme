@@ -111,6 +111,8 @@ They are implemented in bash only (require direct file descriptor access):
   string operations — all evaluation is pure shell builtins.
 - Top-level `define`/`set!` side-effects must be reflected in the
   caller's shell environment via `eval "$(bs ...)"`.
+- Before any push, `make test` and `make example` must both pass for
+  bash and zsh.
 
 ## Testing
 

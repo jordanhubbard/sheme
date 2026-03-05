@@ -11,12 +11,15 @@ Open a GitHub issue. Include:
 
 1. Fork the repo and create a feature branch from `main`.
 2. Make your changes.
-3. Verify all tests pass: `make test-all`
-4. Open a PR against `main` with a clear description of what changed and why.
+3. Before every push, run and pass `make test` and `make example` in both
+   bash and zsh shells.
+4. Verify all tests pass: `make test-all`
+5. Open a PR against `main` with a clear description of what changed and why.
 
 ### PR Checklist
 
 - [ ] `make test-all` passes (bash, zsh, R5RS, and I/O test suites)
+- [ ] Before each push, `make test` and `make example` pass in both bash and zsh
 - [ ] `make check` passes (syntax validation)
 - [ ] New builtins or behaviour changes are covered by tests in `tests/bs.bats`
   and `tests/bs-zsh.zsh`
