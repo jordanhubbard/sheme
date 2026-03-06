@@ -7,6 +7,9 @@
 #   bs-reset           - wipe persistent state between sessions
 #   bs-eval    <src>   - convenience: evaluate and print human-readable result
 
+[[ -n "${_SHEME_ZSH_LOADED:-}" ]] && return 0
+_SHEME_ZSH_LOADED=1
+
 # ──────────────────────────────────────────────────────────────────────────────
 # State-file path (unique per top-level shell session)
 # ──────────────────────────────────────────────────────────────────────────────

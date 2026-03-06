@@ -7,6 +7,9 @@
 #   bs-reset           - wipe interpreter state between sessions
 #   bs-eval    <src>   - convenience: evaluate and print human-readable result
 
+[[ -n "${_SHEME_LOADED:-}" ]] && return 0 2>/dev/null
+_SHEME_LOADED=1
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Internal functions (top-level, operating on global state)
 # ──────────────────────────────────────────────────────────────────────────────
