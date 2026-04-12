@@ -10,6 +10,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.0.8] - 2026-04-11
+
+### Added
+- add include guards to prevent redundant re-sourcing
+- add I/O extension layer to zsh interpreter
+
+### Fixed
+- make install/uninstall idempotent with safe portable sourcing
+- AOT compiler bugs for correct shemacs compilation
+- release script awk multiline entry handling
+
+
 ## [1.0.7] - 2026-03-01
 
 
