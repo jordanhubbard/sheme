@@ -1260,7 +1260,7 @@ __bs_apply() {                        # proc [args...]
             __bs_ret="n:()" ;;
         'f:terminal-size')
             local _rows _cols
-            if [[ -n "$LINES" && -n "$COLUMNS" ]]; then
+            if [[ -n "${LINES:-}" && -n "${COLUMNS:-}" ]]; then
                 _rows="$LINES"
                 _cols="$COLUMNS"
             else
