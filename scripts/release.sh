@@ -116,11 +116,19 @@ ENTRY="## [$NEW_VER] - $DATE"$'\n'
 
 # ── Update CHANGELOG.md ──────────────────────────────────────────────
 if [[ -f CHANGELOG.md ]]; then
-    # Insert new entry after the ## [Unreleased] section header
-    awk -v entry="$ENTRY" '
-        /^## \[Unreleased\]/ { print; print ""; print entry; next }
+    # Insert new entry after the ## [Unreleased] section header.
+    # Write entry to a temp file first — awk -v can't carry newlines.
+    _entry_file=$(mktemp)
+    printf '%s\n' "$ENTRY" > "$_entry_file"
+    awk -v ef="$_entry_file" '
+        /^## \[Unreleased\]/ {
+            print; print ""
+            while ((getline line < ef) > 0) print line
+            next
+        }
         { print }
     ' CHANGELOG.md > CHANGELOG.md.tmp
+    rm -f "$_entry_file"
     mv CHANGELOG.md.tmp CHANGELOG.md
 else
     printf '# Changelog\n\nAll notable changes are documented here.\nFormat follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).\n\n## [Unreleased]\n\n%s\n' "$ENTRY" > CHANGELOG.md
