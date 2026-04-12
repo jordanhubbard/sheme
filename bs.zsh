@@ -37,6 +37,8 @@ bs() {
     local __bs_last=""
     local __bs_ret=""
     local __bs_output_file=""
+    local __bs_stty_saved=""
+    local __bs_last_error=""
     local -a __bs_tokens=()
     local __bs_tpos=0
 
@@ -120,6 +122,9 @@ bs() {
             'string-upcase'|'string-downcase'|'string->list'|'list->string') return 0 ;;
             'char?'|'char->integer'|'integer->char'|'char=?'|'char<?'|'char-alphabetic?'|'char-numeric?') return 0 ;;
             display|write|newline|apply|error|'read-line') return 0 ;;
+            'read-byte'|'read-byte-timeout'|'write-stdout'|'terminal-size') return 0 ;;
+            'terminal-raw!'|'terminal-restore!'|'terminal-suspend!'|'file-read'|'file-write'|'eval-string') return 0 ;;
+            'file-glob'|'file-directory?'|'file-write-atomic'|'shell-capture'|'shell-exec') return 0 ;;
             'make-vector'|vector|'vector-ref'|'vector-set!'|'vector-length'|'vector->list'|'list->vector'|'vector?') return 0 ;;
             'exact->inexact'|'inexact->exact'|exact|inexact|floor|ceiling|round|truncate) return 0 ;;
             'call-with-current-continuation'|'call/cc') return 0 ;;
@@ -132,6 +137,7 @@ bs() {
 
     # ── Error helper ──────────────────────────────────────────────────────
     __bs_error() {
+        __bs_last_error="$*"
         printf 'sheme: %s\n' "$*" >&2
         __bs_ret="n:()"
     }
@@ -1251,6 +1257,138 @@ bs() {
                 IFS= read -r __bs_tmp_readline
                 __bs_ret="s:${__bs_tmp_readline}" ;;
 
+            # ── Terminal I/O ──────────────────────────────────────────────
+            'f:read-byte')
+                local _ch _rc
+                IFS= read -u0 -k1 _ch 2>/dev/null; _rc=$?
+                if (( _rc != 0 )); then
+                    __bs_ret="b:#f"
+                else
+                    local _ord
+                    _ord=$(printf '%d' "'$_ch" 2>/dev/null) || _ord=0
+                    __bs_ret="i:$_ord"
+                fi ;;
+            'f:read-byte-timeout')
+                local _secs="${args[0]:2}" _ch _rc
+                IFS= read -u0 -t "$_secs" -k1 _ch 2>/dev/null; _rc=$?
+                if (( _rc != 0 )); then
+                    __bs_ret="b:#f"
+                else
+                    local _ord
+                    _ord=$(printf '%d' "'$_ch" 2>/dev/null) || _ord=0
+                    __bs_ret="i:$_ord"
+                fi ;;
+            'f:write-stdout')
+                printf '%s' "${args[0]:2}"
+                __bs_ret="n:()" ;;
+            'f:terminal-size')
+                local _rows _cols
+                if [[ -n "${LINES:-}" && -n "${COLUMNS:-}" ]]; then
+                    _rows="$LINES"
+                    _cols="$COLUMNS"
+                else
+                    _rows=$(tput lines 2>/dev/null) || _rows=0
+                    _cols=$(tput cols  2>/dev/null) || _cols=0
+                fi
+                if (( _rows <= 0 || _cols <= 0 )); then
+                    local _sz
+                    _sz=$(stty size 2>/dev/null) || _sz="0 0"
+                    (( _rows <= 0 )) && _rows="${_sz%% *}"
+                    (( _cols <= 0 )) && _cols="${_sz##* }"
+                fi
+                (( _rows <= 0 )) && _rows=24
+                (( _cols <= 0 )) && _cols=80
+                __bs_cons "i:$_rows" "i:$_cols" ;;
+            'f:terminal-raw!')
+                __bs_stty_saved=$(stty -g 2>/dev/null)
+                stty raw -echo -isig -ixon -ixoff -icrnl intr undef quit undef susp undef lnext undef 2>/dev/null
+                stty dsusp undef 2>/dev/null || true
+                __bs_ret="n:()" ;;
+            'f:terminal-restore!')
+                if [[ -n "$__bs_stty_saved" ]]; then
+                    stty "$__bs_stty_saved" 2>/dev/null || stty sane 2>/dev/null
+                    __bs_stty_saved=""
+                fi
+                __bs_ret="n:()" ;;
+            'f:terminal-suspend!')
+                kill -TSTP $$ 2>/dev/null
+                __bs_ret="n:()" ;;
+
+            # ── File I/O ──────────────────────────────────────────────────
+            'f:file-read')
+                local _path="${args[0]:2}" _content
+                if [[ -f "$_path" ]] && _content=$(cat "$_path" 2>/dev/null); then
+                    __bs_ret="s:$_content"
+                else
+                    __bs_ret="b:#f"
+                fi ;;
+            'f:file-write')
+                local _path="${args[0]:2}" _content="${args[1]:2}"
+                if { printf '%s\n' "$_content" > "$_path"; } 2>/dev/null; then
+                    __bs_ret="b:#t"
+                else
+                    __bs_ret="b:#f"
+                fi ;;
+            'f:file-write-atomic')
+                local _path="${args[0]:2}" _content="${args[1]:2}"
+                local _tmp="${_path}.em$$"
+                if { printf '%s\n' "$_content" > "$_tmp"; } 2>/dev/null && mv -f "$_tmp" "$_path" 2>/dev/null; then
+                    __bs_ret="b:#t"
+                else
+                    rm -f "$_tmp" 2>/dev/null
+                    __bs_ret="b:#f"
+                fi ;;
+            'f:file-glob')
+                local _pat="${args[0]:2}"
+                local -a _matches=()
+                local _f
+                for _f in ${~_pat}*(N); do
+                    _matches+=("$_f")
+                done
+                local _list="n:()"
+                local -i _gi
+                for (( _gi=${#_matches[@]}-1; _gi>=0; _gi-- )); do
+                    __bs_cons "s:${_matches[$_gi]}" "$_list"
+                    _list="$__bs_ret"
+                done
+                __bs_ret="$_list" ;;
+            'f:file-directory?')
+                [[ -d "${args[0]:2}" ]] && __bs_ret="b:#t" || __bs_ret="b:#f" ;;
+
+            # ── Shell execution ───────────────────────────────────────────
+            'f:shell-capture')
+                local _out
+                _out=$(eval "${args[0]:2}" 2>/dev/null) && __bs_ret="s:$_out" || __bs_ret="b:#f" ;;
+            'f:shell-exec')
+                printf '%s' "${args[1]:2}" | eval "${args[0]:2}" 2>/dev/null
+                [[ $? -eq 0 ]] && __bs_ret="b:#t" || __bs_ret="b:#f" ;;
+
+            # ── Eval-string ───────────────────────────────────────────────
+            'f:eval-string')
+                local _eval_src="${args[0]:2}"
+                local -a _saved_tokens=("${__bs_tokens[@]}")
+                local _saved_tpos="$__bs_tpos"
+                __bs_last_error=""
+                __bs_tokenize "$_eval_src"
+                __bs_tpos=0
+                __bs_ret="n:()"
+                local _eval_ok=1
+                while (( __bs_tpos < ${#__bs_tokens[@]} )); do
+                    if ! __bs_parse_expr; then _eval_ok=0; break; fi
+                    if ! __bs_eval "$__bs_ret" "0"; then _eval_ok=0; break; fi
+                done
+                local _result_val="$__bs_ret"
+                __bs_tokens=("${_saved_tokens[@]}")
+                __bs_tpos="$_saved_tpos"
+                if (( _eval_ok )); then
+                    __bs_display "$_result_val"
+                    local _disp="$__bs_ret"
+                    __bs_cons "b:#t" "s:$_disp"
+                else
+                    local _err="${__bs_last_error:-unknown error}"
+                    __bs_cons "b:#f" "s:$_err"
+                fi ;;
+
             # ── Vector ────────────────────────────────────────────────────
             'f:make-vector')
                 local _id="v:${__bs_heap_next}"
@@ -1445,6 +1583,7 @@ bs() {
         for _sk in "${(k)__bs_env_parent[@]}"; do
             printf '__bs_env_parent[%s]=%q\n' "$_sk" "${__bs_env_parent[$_sk]}"
         done
+        [[ -n "$__bs_stty_saved" ]] && printf '__bs_stty_saved=%q\n' "$__bs_stty_saved"
     } > "${__BS_STATE_FILE}"
 
     # ── Emit output for eval ──

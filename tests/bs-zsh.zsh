@@ -359,6 +359,147 @@ bs_run "(reverse '())"; assert "reverse empty list" "$__bs_last" "n:()"
 bs_run "(length '())"; assert "length empty list" "$result" "0"
 bs_run "(cond ((assoc 'b '((a 1) (b 2) (c 3))) => cdr))"; assert "cond => syntax" "$__bs_last_display" "(2)"
 
+# ── 32. I/O Builtins ─────────────────────────────────────────────────────────
+
+# Helper: extract the direct-stdout portion from $(bs ...) output.
+# zsh's bs() emits typeset assignments to stdout after any write-stdout content;
+# this strips them so we can compare just the user-visible output.
+bs_stdout() {
+    local _raw
+    _raw=$(bs "$1")
+    printf '%s' "${_raw%%typeset*}"
+}
+
+# -- write-stdout --
+bs-reset
+_wout=$(bs_stdout '(write-stdout "hello zsh")');  assert "write-stdout string"      "$_wout"     "hello zsh"
+_wout=$(bs_stdout '(write-stdout "")');            assert "write-stdout empty"       "$_wout"     ""
+# write-stdout returns nil: can't use bs_run (raw stdout corrupts eval);
+# match the typeset line in raw bs output instead
+(( _total++ ))
+_raw=$(bs '(write-stdout "x")')
+if [[ "$_raw" == *'__bs_last=n:\(\)'* ]]; then
+    (( _pass++ )); printf 'ok %d write-stdout returns nil\n' "$_total"
+else
+    (( _fail++ )); printf 'not ok %d write-stdout returns nil\n' "$_total"
+    printf '  output: %q\n' "$_raw"
+fi
+
+# -- file-read / file-write / file-write-atomic / file-directory? / file-glob --
+_IO_TMP=$(mktemp -d)
+printf 'hello world'           > "$_IO_TMP/simple.txt"
+printf 'line 1\nline 2\nline 3' > "$_IO_TMP/multi.txt"
+
+bs-reset
+bs_run "(file-read \"$_IO_TMP/simple.txt\")";
+    assert "file-read simple"       "$result"    "hello world"
+bs_run "(file-read \"$_IO_TMP/multi.txt\")";
+    assert "file-read multiline"    "$result"    "line 1
+line 2
+line 3"
+bs_run "(file-read \"$_IO_TMP/no-such-file\")";
+    assert "file-read nonexistent"  "$__bs_last" "b:#f"
+bs_run "(file-read \"$_IO_TMP\")";
+    assert "file-read directory"    "$__bs_last" "b:#f"
+
+bs_run "(file-write \"$_IO_TMP/out.txt\" \"written\")";
+    assert "file-write #t"          "$__bs_last" "b:#t"
+bs_run "(file-write \"/no/such/dir/x\" \"data\")";
+    assert "file-write bad path #f" "$__bs_last" "b:#f"
+bs_run "(file-write \"$_IO_TMP/out.txt\" \"hello\")";
+    bs_run "(file-read \"$_IO_TMP/out.txt\")";
+    assert "file-write roundtrip"   "$result"    "hello"
+
+bs_run "(file-write-atomic \"$_IO_TMP/a.txt\" \"atomic\")";
+    assert "file-write-atomic #t"        "$__bs_last" "b:#t"
+bs_run "(file-read \"$_IO_TMP/a.txt\")";
+    assert "file-write-atomic roundtrip" "$result"    "atomic"
+
+bs_run "(file-directory? \"$_IO_TMP\")";
+    assert "file-directory? dir"         "$__bs_last" "b:#t"
+bs_run "(file-directory? \"$_IO_TMP/simple.txt\")";
+    assert "file-directory? file"        "$__bs_last" "b:#f"
+bs_run "(file-directory? \"$_IO_TMP/nonexistent\")";
+    assert "file-directory? nonexistent" "$__bs_last" "b:#f"
+
+bs_run "(list? (file-glob \"$_IO_TMP/\"))";
+    assert "file-glob returns list" "$__bs_last" "b:#t"
+_IO_EMPTY=$(mktemp -d)
+bs_run "(null? (file-glob \"$_IO_EMPTY/\"))";
+    assert "file-glob empty dir"    "$__bs_last" "b:#t"
+rmdir "$_IO_EMPTY"
+
+# -- terminal-size --
+bs-reset
+bs_run '(pair? (terminal-size))';     assert "terminal-size pair"         "$__bs_last" "b:#t"
+bs_run '(> (car (terminal-size)) 0)'; assert "terminal-size rows > 0"     "$__bs_last" "b:#t"
+bs_run '(> (cdr (terminal-size)) 0)'; assert "terminal-size cols > 0"     "$__bs_last" "b:#t"
+
+# -- terminal-raw! / terminal-restore! / terminal-suspend! --
+bs-reset
+bs_run '(procedure? terminal-raw!)';     assert "terminal-raw! procedure"     "$__bs_last" "b:#t"
+bs_run '(procedure? terminal-restore!)'; assert "terminal-restore! procedure"  "$__bs_last" "b:#t"
+bs_run '(procedure? terminal-suspend!)'; assert "terminal-suspend! procedure"  "$__bs_last" "b:#t"
+bs_run '(terminal-restore!)';            assert "terminal-restore! no-op nil"  "$__bs_last" "n:()"
+
+# -- read-byte --
+bs-reset
+result=$(echo -n "A"  | bs-eval '(read-byte)'); assert "read-byte A=65"       "$result" "65"
+result=$(printf '\n'  | bs-eval '(read-byte)'); assert "read-byte newline=10"  "$result" "10"
+result=$(echo -n ""   | bs-eval '(read-byte)'); assert "read-byte EOF=#f"      "$result" "#f"
+result=$(printf '\0'  | bs-eval '(read-byte)'); assert "read-byte NUL=0"       "$result" "0"
+result=$(printf ' '   | bs-eval '(read-byte)'); assert "read-byte space=32"    "$result" "32"
+
+# -- read-byte-timeout --
+result=$(echo -n "Z"  | bs-eval '(read-byte-timeout "1")')   ; assert "read-byte-timeout Z=90"     "$result" "90"
+result=$(echo -n ""   | bs-eval '(read-byte-timeout "0.01")'); assert "read-byte-timeout empty=#f"  "$result" "#f"
+
+# -- shell-capture / shell-exec --
+bs-reset
+bs_run "(shell-capture \"printf '%s' hello\")"; assert "shell-capture output"  "$result"    "hello"
+bs_run "(shell-capture \"exit 1\")";            assert "shell-capture fail #f" "$__bs_last" "b:#f"
+
+# -- eval-string --
+bs-reset
+eval "$(bs '(eval-string "(+ 1 2 3)")')";
+    assert "eval-string arithmetic"     "$__bs_last_display" "(#t . 6)"
+eval "$(bs '(car (eval-string "(+ 1 2)"))')";
+    assert "eval-string car #t"         "$__bs_last"         "b:#t"
+eval "$(bs '(cdr (eval-string "(+ 1 2 3)"))')";
+    assert "eval-string result in cdr"  "$__bs_last_display" "6"
+eval "$(bs '(cdr (eval-string "\"hello\""))')";
+    assert "eval-string string result"  "$__bs_last_display" "hello"
+eval "$(bs '(cdr (eval-string "(define (sq x) (* x x)) (sq 5)"))')";
+    assert "eval-string with define"    "$__bs_last_display" "25"
+eval "$(bs '(car (eval-string "(+ 1 undefined-var)"))' 2>/dev/null)";
+    assert "eval-string error car #f"   "$__bs_last"         "b:#f"
+(( _total++ ))
+eval "$(bs '(cdr (eval-string "(+ 1 undefined-var)"))' 2>/dev/null)"
+if [[ "$__bs_last" == s:* && -n "${__bs_last:2}" ]]; then
+    (( _pass++ )); printf 'ok %d eval-string error message non-empty\n' "$_total"
+else
+    (( _fail++ )); printf 'not ok %d eval-string error message non-empty\n' "$_total"
+    printf '  expected: s:<non-empty>  got: [%s]\n' "$__bs_last"
+fi
+bs-reset
+eval "$(bs '(define outer-val 42)')"; eval "$(bs '(eval-string "(+ 1 1)")')"; eval "$(bs 'outer-val')"
+    assert "eval-string preserves outer state" "$__bs_last_display" "42"
+eval "$(bs '(eval-string "")')";
+    assert "eval-string empty string"   "$__bs_last_display" "(#t . ())"
+eval "$(bs '(cdr (eval-string "(+ 1 1) (+ 1 2)"))')";
+    assert "eval-string multiple exprs" "$__bs_last_display" "3"
+
+# -- Integration: file + eval-string --
+bs-reset
+eval "$(bs "(file-write \"$_IO_TMP/fact.scm\" \"(define (fact n) (if (= n 0) 1 (* n (fact (- n 1))))) (fact 5)\")")"
+eval "$(bs "(cdr (eval-string (file-read \"$_IO_TMP/fact.scm\")))")"
+    assert "file + eval-string roundtrip"       "$__bs_last_display" "120"
+bs-reset
+eval "$(bs '(define a 10)')"; eval "$(bs '(eval-string "(define b 20)")')"; eval "$(bs 'a')"
+    assert "eval-string no tokenizer corruption" "$__bs_last_display" "10"
+
+rm -rf "$_IO_TMP"
+
 # ── Summary ───────────────────────────────────────────────────────────────────
 echo ""
 echo "──────────────────────────────────────"
