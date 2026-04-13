@@ -1233,7 +1233,7 @@ __bs_apply() {                        # proc [args...]
         # ── Terminal I/O (bash-only) ─────────────────────────────────
         'f:read-byte')
             local _ch
-            IFS= read -rsn1 -d '' _ch
+            IFS= read -ru${_BS_IN_FD:-0} -n1 -d '' _ch
             if [[ $? -ne 0 && -z "$_ch" ]]; then
                 __bs_ret="b:#f"
             elif [[ -z "$_ch" ]]; then
@@ -1245,7 +1245,7 @@ __bs_apply() {                        # proc [args...]
             fi ;;
         'f:read-byte-timeout')
             local _secs="${args[0]:2}" _ch
-            IFS= read -rsn1 -d '' -t "$_secs" _ch
+            IFS= read -ru${_BS_IN_FD:-0} -n1 -d '' -t "$_secs" _ch
             if [[ $? -ne 0 && -z "$_ch" ]]; then
                 __bs_ret="b:#f"
             elif [[ -z "$_ch" ]]; then
@@ -1280,8 +1280,19 @@ __bs_apply() {                        # proc [args...]
             __bs_stty_saved=$(stty -g 2>/dev/null)
             stty raw -echo -isig -ixon -ixoff -icrnl intr undef quit undef susp undef lnext undef 2>/dev/null
             stty dsusp undef 2>/dev/null || true   # macOS only; ignore on Linux
+            # Start dd coprocess as sole TTY reader — avoids tcsetattr(TCSADRAIN) on every read-byte
+            if [[ -t 0 ]]; then
+                coproc __bs_tty (dd bs=1 status=none < /dev/tty 2>/dev/null)
+                _BS_IN_FD=${__bs_tty[0]}
+                exec 0</dev/null   # close parent's TTY stdin to avoid race with coprocess
+            fi
             __bs_ret="n:()" ;;
         'f:terminal-restore!')
+            if [[ -n "${__bs_tty_PID:-}" ]]; then
+                kill "$__bs_tty_PID" 2>/dev/null; wait "$__bs_tty_PID" 2>/dev/null || true
+                exec 0</dev/tty   # reattach stdin to controlling terminal
+                _BS_IN_FD=0
+            fi
             if [[ -n "$__bs_stty_saved" ]]; then
                 stty "$__bs_stty_saved" 2>/dev/null || stty sane 2>/dev/null
                 __bs_stty_saved=""
@@ -1606,6 +1617,13 @@ __bsc_mangle() {
             *) r+='_' ;;
         esac
     done
+    # Rename variables that clash with zsh special read-only names
+    if [[ "$__bsc_target" == "zsh" ]]; then
+        case "$r" in
+            status|pipestatus|funcstack|funcfiletrace|funcsourcetrace|\
+            LINENO|FUNCNAME|BASH_SOURCE) r="__sc_${r}" ;;
+        esac
+    fi
     __bsc_ret="$r"
 }
 
@@ -1620,11 +1638,18 @@ declare -gA __bsc_pair_vars=()   # variables known to be 2-element pairs
 declare -gA __bsc_arr_vars=()    # variables known to be arrays (vectors/lists)
 declare -g  __bsc_in_func=0      # 1 when inside a function definition
 declare -g __bsc_list_n=0        # counter for temp list variables
+declare -g __bsc_target="bash"   # output target: "bash" or "zsh"
 
 # ── Output helpers ───────────────────────────────────────────────────────────
 __bsc_line() { __bsc_out+="${__bsc_indent}$1"$'\n'; }
 # Emit "local ..." or "declare ..." depending on scope
-__bsc_local() { local kw="local"; (( __bsc_in_func )) || kw="declare"; __bsc_line "$kw $1"; }
+__bsc_local() {
+    local kw="local"
+    if ! (( __bsc_in_func )); then
+        [[ "$__bsc_target" == "zsh" ]] && kw="typeset" || kw="declare"
+    fi
+    __bsc_line "$kw $1"
+}
 __bsc_push_indent() { __bsc_indent+="    "; }
 __bsc_pop_indent() { __bsc_indent="${__bsc_indent%    }"; }
 
@@ -3278,20 +3303,27 @@ __bsc_emit_apply() {
             __bsc_emit_expr "$_list_expr" "expr"
             local arr="$(__bsc_strip_dollar "$__bsc_ret")"
         fi
+        # Use a local string accumulation variable instead of a subshell,
+        # avoiding a fork() per call (critical for render-loop performance).
+        local _sa_tmp="__sa_r${__bsc_list_n}"
+        (( __bsc_list_n++ )) || true
         if (( _reverse )); then
-            # Reverse iteration: emit a loop that walks the array backwards
             local _pfx=""
             if (( ${#_prefix_parts[@]} > 0 )); then
                 for _pp in "${_prefix_parts[@]}"; do _pfx+="\${$(__bsc_strip_dollar "$_pp")}"; done
             fi
-            __bsc_ret="\"\$(printf '%s' \"${_pfx}\"; for (( __i=\${#${arr}[@]}-1; __i>=0; __i-- )); do printf '%s' \"\${${arr}[\$__i]}\"; done)\""
+            __bsc_line "local ${_sa_tmp}=\"${_pfx}\""
+            __bsc_line "for (( __i=\${#${arr}[@]}-1; __i>=0; __i-- )); do ${_sa_tmp}+=\"\${${arr}[\$__i]}\"; done"
         elif (( ${#_prefix_parts[@]} > 0 )); then
             local _pfx=""
             for _pp in "${_prefix_parts[@]}"; do _pfx+="\${$(__bsc_strip_dollar "$_pp")}"; done
-            __bsc_ret="\"${_pfx}\$(IFS=''; echo \"\${${arr}[*]}\")\""
+            __bsc_line "local ${_sa_tmp}=\"${_pfx}\""
+            __bsc_line "for __sa_e in \"\${${arr}[@]}\"; do ${_sa_tmp}+=\"\$__sa_e\"; done"
         else
-            __bsc_ret="\$(IFS=''; echo \"\${${arr}[*]}\")"
+            __bsc_line "local ${_sa_tmp}=\"\""
+            __bsc_line "for __sa_e in \"\${${arr}[@]}\"; do ${_sa_tmp}+=\"\$__sa_e\"; done"
         fi
+        __bsc_ret="\"\$${_sa_tmp}\""
         return 0
     fi
 
@@ -3681,13 +3713,24 @@ __bsc_emit_char_op() {
         'char->integer')
             __bsc_emit_expr "${__bs_car[$rest]}" "expr"
             local ch="$__bsc_ret"
-            __bsc_line "printf -v __r '%d' \"'$ch\""
+            if [[ "$__bsc_target" == "zsh" ]]; then
+                __bsc_line "__r=\$(printf '%d' \"'$ch\" 2>/dev/null) || __r=0"
+            else
+                __bsc_line "printf -v __r '%d' \"'$ch\""
+            fi
             __bsc_ret="\$__r"
             return 0 ;;
 
         'integer->char')
             __bsc_emit_expr "${__bs_car[$rest]}" "expr"
-            __bsc_line "__r=\$(printf \"\\\\x\$(printf '%x' \"$__bsc_ret\")\")"
+            # Use pre-built lookup table to avoid fork-per-call overhead.
+            # Falls back to subshell for values > 127 (rare in practice).
+            local _n="$(__bsc_strip_dollar "$__bsc_ret")"
+            __bsc_line "if (( ${_n} <= 127 )); then"
+            __bsc_line "    __r=\"\${__bsc_b2c[${_n}]}\""
+            __bsc_line "else"
+            __bsc_line "    __r=\$(printf \"\\\\x\$(printf '%x' \"${_n}\")\")"
+            __bsc_line "fi"
             __bsc_ret="\$__r"
             return 0 ;;
 
@@ -4133,33 +4176,55 @@ __bsc_emit_io() {
             return 0 ;;
         'write-stdout')
             __bsc_emit_expr "${__bs_car[$rest]}" "expr"
-            __bsc_line "printf '%s' $__bsc_ret"
+            if [[ "$__bsc_target" == "zsh" ]]; then
+                __bsc_line "printf '%s' $__bsc_ret >&\${_BS_OUT_FD:-1}"
+            else
+                __bsc_line "printf '%s' $__bsc_ret"
+            fi
             __bsc_ret=""
             return 0 ;;
         'read-byte')
-            __bsc_line "local __rb_ch"
-            __bsc_line "IFS= read -rsn1 -d '' __rb_ch"
-            __bsc_line "if [[ \$? -ne 0 && -z \"\$__rb_ch\" ]]; then"
-            __bsc_line "    __r=\"\""
-            __bsc_line "elif [[ -z \"\$__rb_ch\" ]]; then"
-            __bsc_line "    __r=0"
-            __bsc_line "else"
-            __bsc_line "    printf -v __r '%d' \"'\$__rb_ch\" 2>/dev/null || __r=0"
-            __bsc_line "fi"
+            __bsc_line "local __rb_ch __rb_rc"
+            if [[ "$__bsc_target" == "zsh" ]]; then
+                __bsc_line "IFS= read -u\${_BS_IN_FD:-0} -k1 __rb_ch 2>/dev/null; __rb_rc=\$?"
+                __bsc_line "if (( __rb_rc != 0 )); then"
+                __bsc_line "    __r=\"\""
+                __bsc_line "else"
+                __bsc_line "    __r=\$(printf '%d' \"'\$__rb_ch\" 2>/dev/null) || __r=0"
+                __bsc_line "fi"
+            else
+                __bsc_line "IFS= read -ru\${_BS_IN_FD:-0} -n1 -d '' __rb_ch; __rb_rc=\$?"
+                __bsc_line "if [[ \$__rb_rc -ne 0 && -z \"\$__rb_ch\" ]]; then"
+                __bsc_line "    __r=\"\""
+                __bsc_line "elif [[ -z \"\$__rb_ch\" ]]; then"
+                __bsc_line "    __r=0"
+                __bsc_line "else"
+                __bsc_line "    printf -v __r '%d' \"'\$__rb_ch\" 2>/dev/null || __r=0"
+                __bsc_line "fi"
+            fi
             __bsc_ret="\$__r"
             return 0 ;;
         'read-byte-timeout')
             __bsc_emit_expr "${__bs_car[$rest]}" "expr"
             local timeout="$__bsc_ret"
-            __bsc_line "local __rb_ch"
-            __bsc_line "IFS= read -rsn1 -d '' -t $timeout __rb_ch"
-            __bsc_line "if [[ \$? -ne 0 && -z \"\$__rb_ch\" ]]; then"
-            __bsc_line "    __r=\"\""
-            __bsc_line "elif [[ -z \"\$__rb_ch\" ]]; then"
-            __bsc_line "    __r=0"
-            __bsc_line "else"
-            __bsc_line "    printf -v __r '%d' \"'\$__rb_ch\" 2>/dev/null || __r=0"
-            __bsc_line "fi"
+            __bsc_line "local __rb_ch __rb_rc"
+            if [[ "$__bsc_target" == "zsh" ]]; then
+                __bsc_line "IFS= read -u\${_BS_IN_FD:-0} -t $timeout -k1 __rb_ch 2>/dev/null; __rb_rc=\$?"
+                __bsc_line "if (( __rb_rc != 0 )); then"
+                __bsc_line "    __r=\"\""
+                __bsc_line "else"
+                __bsc_line "    __r=\$(printf '%d' \"'\$__rb_ch\" 2>/dev/null) || __r=0"
+                __bsc_line "fi"
+            else
+                __bsc_line "IFS= read -ru\${_BS_IN_FD:-0} -n1 -d '' -t $timeout __rb_ch; __rb_rc=\$?"
+                __bsc_line "if [[ \$__rb_rc -ne 0 && -z \"\$__rb_ch\" ]]; then"
+                __bsc_line "    __r=\"\""
+                __bsc_line "elif [[ -z \"\$__rb_ch\" ]]; then"
+                __bsc_line "    __r=0"
+                __bsc_line "else"
+                __bsc_line "    printf -v __r '%d' \"'\$__rb_ch\" 2>/dev/null || __r=0"
+                __bsc_line "fi"
+            fi
             __bsc_ret="\$__r"
             return 0 ;;
         'read-line')
@@ -4201,9 +4266,24 @@ __bsc_emit_terminal() {
             __bsc_line "__bsc_stty_saved=\$(stty -g 2>/dev/null)"
             __bsc_line "stty raw -echo -isig -ixon -ixoff -icrnl intr undef quit undef susp undef lnext undef 2>/dev/null"
             __bsc_line "stty dsusp undef 2>/dev/null || true"
+            if [[ "$__bsc_target" != "zsh" ]]; then
+                # Start dd coprocess as sole TTY reader — avoids tcsetattr(TCSADRAIN) on every read-byte
+                __bsc_line "if [[ -t 0 ]]; then"
+                __bsc_line "    coproc __bsc_tty (dd bs=1 status=none < /dev/tty 2>/dev/null)"
+                __bsc_line "    _BS_IN_FD=\${__bsc_tty[0]}"
+                __bsc_line "    exec 0</dev/null"
+                __bsc_line "fi"
+            fi
             __bsc_ret=""
             return 0 ;;
         'terminal-restore!')
+            if [[ "$__bsc_target" != "zsh" ]]; then
+                __bsc_line "if [[ -n \"\${__bsc_tty_PID:-}\" ]]; then"
+                __bsc_line "    kill \"\$__bsc_tty_PID\" 2>/dev/null; wait \"\$__bsc_tty_PID\" 2>/dev/null || true"
+                __bsc_line "    exec 0</dev/tty"
+                __bsc_line "    _BS_IN_FD=0"
+                __bsc_line "fi"
+            fi
             __bsc_line "if [[ -n \"\${__bsc_stty_saved:-}\" ]]; then"
             __bsc_line "    stty \"\$__bsc_stty_saved\" 2>/dev/null || stty sane 2>/dev/null"
             __bsc_line "    __bsc_stty_saved=\"\""
@@ -4260,7 +4340,11 @@ __bsc_emit_file_op() {
             __bsc_emit_expr "${__bs_car[$rest]}" "expr"
             local pat="$__bsc_ret"
             __bsc_line "local -a __fg=()"
-            __bsc_line "for __fgf in \${${pat}}*; do [[ -e \"\$__fgf\" ]] && __fg+=(\"\$__fgf\"); done"
+            if [[ "$__bsc_target" == "zsh" ]]; then
+                __bsc_line "for __fgf in \${~${pat}}*(N); do __fg+=(\"\$__fgf\"); done"
+            else
+                __bsc_line "for __fgf in \${${pat}}*; do [[ -e \"\$__fgf\" ]] && __fg+=(\"\$__fgf\"); done"
+            fi
             __bsc_ret='("${__fg[@]}")'
             return 0 ;;
         'file-directory?')
@@ -4329,13 +4413,41 @@ bs-compile() {
     __bsc_arr_vars=()
 
     # Emit header
-    __bsc_line "#!/usr/bin/env bash"
-    __bsc_line "# Generated by bs-compile (sheme AOT compiler)"
-    __bsc_line "# Source: Scheme → Bash transpilation"
-    __bsc_line ""
-    __bsc_line "# Return value convention: \$__r for function results"
-    __bsc_line "declare -g __r=\"\" __bsc_stty_saved=\"\""
-    __bsc_line ""
+    if [[ "$__bsc_target" == "zsh" ]]; then
+        __bsc_line "#!/usr/bin/env zsh"
+        __bsc_line "# Generated by bs-compile-zsh (sheme AOT compiler)"
+        __bsc_line "# Source: Scheme → Zsh transpilation"
+        __bsc_line "setopt KSH_ARRAYS 2>/dev/null || true"
+        __bsc_line ""
+        __bsc_line "# Return value convention: \$__r for function results"
+        __bsc_line "typeset -g __r=\"\" __bsc_stty_saved=\"\""
+        __bsc_line ""
+    else
+        __bsc_line "#!/usr/bin/env bash"
+        __bsc_line "# Generated by bs-compile (sheme AOT compiler)"
+        __bsc_line "# Source: Scheme → Bash transpilation"
+        __bsc_line ""
+        __bsc_line "# Return value convention: \$__r for function results"
+        __bsc_line "declare -g __r=\"\" __bsc_stty_saved=\"\""
+        __bsc_line ""
+    fi
+    # Emit byte-to-char lookup table — built once at startup, eliminates
+    # fork-per-call overhead from integer->char in interactive hot paths.
+    if [[ "$__bsc_target" == "zsh" ]]; then
+        __bsc_line "# Runtime: byte-to-char lookup table (avoids fork per integer->char call)"
+        __bsc_line "typeset -ga __bsc_b2c=()"
+        __bsc_line 'for (( __bsc_i=0; __bsc_i<=127; __bsc_i++ )); do'
+        __bsc_line '    __bsc_b2c[$__bsc_i]=$(printf "\\$(printf '"'"'%03o'"'"' "$__bsc_i")")'
+        __bsc_line 'done'
+        __bsc_line ""
+    else
+        __bsc_line "# Runtime: byte-to-char lookup table (avoids fork per integer->char call)"
+        __bsc_line "declare -ga __bsc_b2c=()"
+        __bsc_line 'for (( __bsc_i=0; __bsc_i<=127; __bsc_i++ )); do'
+        __bsc_line '    __bsc_b2c[$__bsc_i]=$(printf "\\$(printf '"'"'%03o'"'"' "$__bsc_i")")'
+        __bsc_line 'done'
+        __bsc_line ""
+    fi
     # Mark builtins that have Scheme user-defined versions — skip those defines
     __bsc_funcs["string_repeat"]=1
     __bsc_funcs["vector_insert"]=1
@@ -4729,6 +4841,17 @@ bs-compile() {
     # Output the result
     printf '%s' "$__bsc_out"
 
+    __bsc_target="bash"   # reset to default
     [[ -n "$_bs_old_opts" ]] && set -e
     return 0
+}
+
+# ── bs-compile-zsh ────────────────────────────────────────────────────────────
+# Compile Scheme source to native zsh code.
+# Usage: bs-compile-zsh <scheme-source>
+# Output: zsh script on stdout (cache as *.zsh.cache; source to get functions)
+# ──────────────────────────────────────────────────────────────────────────────
+bs-compile-zsh() {
+    __bsc_target="zsh"
+    bs-compile "$@"
 }

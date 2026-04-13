@@ -1259,8 +1259,8 @@ bs() {
 
             # ── Terminal I/O ──────────────────────────────────────────────
             'f:read-byte')
-                local _ch _rc
-                IFS= read -u0 -k1 _ch 2>/dev/null; _rc=$?
+                local _ch _rc _in_fd="${_BS_IN_FD:-0}"
+                IFS= read -u${_in_fd} -k1 _ch 2>/dev/null; _rc=$?
                 if (( _rc != 0 )); then
                     __bs_ret="b:#f"
                 else
@@ -1269,8 +1269,8 @@ bs() {
                     __bs_ret="i:$_ord"
                 fi ;;
             'f:read-byte-timeout')
-                local _secs="${args[0]:2}" _ch _rc
-                IFS= read -u0 -t "$_secs" -k1 _ch 2>/dev/null; _rc=$?
+                local _secs="${args[0]:2}" _ch _rc _in_fd="${_BS_IN_FD:-0}"
+                IFS= read -u${_in_fd} -t "$_secs" -k1 _ch 2>/dev/null; _rc=$?
                 if (( _rc != 0 )); then
                     __bs_ret="b:#f"
                 else
@@ -1279,7 +1279,7 @@ bs() {
                     __bs_ret="i:$_ord"
                 fi ;;
             'f:write-stdout')
-                printf '%s' "${args[0]:2}"
+                printf '%s' "${args[0]:2}" >&${_BS_OUT_FD:-1}
                 __bs_ret="n:()" ;;
             'f:terminal-size')
                 local _rows _cols
@@ -1614,4 +1614,20 @@ bs-reset() {
 bs-eval() {
     eval "$(bs "$1")"
     printf '%s\n' "$__bs_last_display"
+}
+
+# ──────────────────────────────────────────────────────────────────────────────
+# bs-run: run an expression with direct terminal I/O (for interactive programs)
+#
+# Unlike bs/eval "$(bs ...)", this discards the typeset output and routes
+# write-stdout directly to /dev/tty.  Used by em.scm.zsh and similar launchers.
+# ──────────────────────────────────────────────────────────────────────────────
+bs-run() {
+    local _bs_run_src="$1"
+    (
+        exec 3>/dev/tty
+        export _BS_OUT_FD=3
+        export _BS_IN_FD=0
+        bs "$_bs_run_src" > /dev/null
+    ) < /dev/tty
 }
