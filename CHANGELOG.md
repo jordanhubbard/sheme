@@ -10,6 +10,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-04-12
+
+### Other
+- perf: avoid tcsetattr(TCSADRAIN) per read-byte via dd coprocess
+
+
 ## [1.0.8] - 2026-04-11
 
 ### Added
