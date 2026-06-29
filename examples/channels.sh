@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
-# channels.sh - Communicating sequential processes via Scheme + shell pipes
+# channels.sh - Message-oriented computations hosted by the shell
 #
-# Demonstrates sheme's shell integration: Scheme computes, bash orchestrates.
-# Shows a producer/consumer pipeline using temp files as message channels.
+# Demonstrates sheme's embedding model: Scheme builds and dispatches work-item
+# pairs, computes aggregates, and interprets a small stack-machine protocol.
+# The example is sequential and deterministic; "channel" describes the message
+# shape rather than a concurrent queue or temporary-file transport.
 #
 # Run:  bash examples/channels.sh
 
@@ -20,11 +22,15 @@ banner "Scheme generates a work queue, shell processes it"
 # Producer: generate a list of tasks in Scheme
 bs '(define tasks
       (map (lambda (n)
-             (string-append (number->string n) " " (number->string (* n n))))
+             (cons n (* n n)))
            (list 1 2 3 4 5 6 7 8 9 10)))'
 
-bs 'tasks' | tr -d '("")' | tr ' ' '\n' | grep -v '^$' | \
-    awk 'NR%2==1{n=$1} NR%2==0{printf "  %3d squared = %s\n", n, $1}' || true
+bs '(for-each
+      (lambda (task)
+        (write-stdout
+          (string-append "  " (number->string (car task))
+                         " squared = " (number->string (cdr task)) "\n")))
+      tasks)'
 
 # ─────────────────────────────────────────────────────────────────────────────
 banner "Scheme as a computation engine: word frequency"
@@ -32,9 +38,8 @@ banner "Scheme as a computation engine: word frequency"
 TEXT="the quick brown fox jumps over the lazy dog the fox"
 printf 'Input: "%s"\n' "$TEXT"
 
-# Pass words into Scheme as a list and count frequencies
-WORDS="(quote ($(echo "$TEXT" | tr ' ' ' ' | awk '{for(i=1;i<=NF;i++) printf "(quote %s) ", $i}')))"
-bs "(define words $WORDS)"
+# Pass words into Scheme as symbols and count frequencies.
+bs "(define words (quote ($TEXT)))"
 bs '(define (frequencies lst)
       (let loop ((lst lst) (acc (quote ())))
         (if (null? lst) acc
@@ -44,8 +49,18 @@ bs '(define (frequencies lst)
                   (begin
                     (set-cdr! entry (+ (cdr entry) 1))
                     (loop (cdr lst) acc))
-                  (loop (cdr lst) (cons (cons w 1) acc)))))))'
-bs-eval '(sort (frequencies words) (lambda (a b) (> (cdr a) (cdr b))))'
+                  (loop (cdr lst) (cons (cons w 1) acc)))))))
+
+    (define (insert-by item sorted before?)
+      (cond ((null? sorted) (list item))
+            ((before? item (car sorted)) (cons item sorted))
+            (else (cons (car sorted)
+                        (insert-by item (cdr sorted) before?)))))
+
+    (define (sort-by lst before?)
+      (foldl (lambda (item sorted) (insert-by item sorted before?))
+             (quote ()) lst))'
+bs-eval '(sort-by (frequencies words) (lambda (a b) (> (cdr a) (cdr b))))'
 
 # ─────────────────────────────────────────────────────────────────────────────
 banner "Scheme DSL: simple stack machine"
@@ -70,10 +85,10 @@ bs '(define (run-stack-machine program)
                 (else (error "unknown op" op)))))))'
 
 printf 'Program: 3 4 + 2 * dup *  =>  '
-bs-eval "(run-stack-machine '(3 4 + 2 * dup *))"   ; ((3+4)*2)^2 = 196
+bs-eval "(run-stack-machine '(3 4 + 2 * dup *))"   # ((3+4)*2)^2 = 196
 
 printf 'Program: 5 dup * 12 dup * +  =>  '
-bs-eval "(run-stack-machine '(5 dup * 12 dup * +))" ; 5^2 + 12^2 = 169
+bs-eval "(run-stack-machine '(5 dup * 12 dup * +))" # 5^2 + 12^2 = 169
 
 echo ""
 echo "Done."

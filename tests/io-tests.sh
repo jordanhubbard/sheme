@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# tests/io-tests.sh - Tests for terminal I/O and file builtins (bash only)
+# tests/io-tests.sh - Dedicated Bash harness for terminal/file builtins.
+# The zsh implementation is covered independently by tests/bs-zsh.zsh.
 # Outputs TAP (Test Anything Protocol) format.
 # Exit code 1 if any tests fail, 0 otherwise.
 
@@ -133,7 +134,7 @@ trap 'rm -rf "$TMPDIR_IO"' EXIT
 
 # ── Plan ──────────────────────────────────────────────────────────────
 echo "TAP version 13"
-echo "# I/O builtin tests for sheme (bash only)"
+echo "# I/O builtin tests for sheme (Bash harness; zsh has parity coverage)"
 echo ""
 
 # ======================================================================
@@ -155,7 +156,7 @@ test_stdout "write-stdout with special chars" \
 
 # write-stdout returns nil — verify via raw tag (bs is silent, so stdout only has write-stdout output)
 test_raw "write-stdout returns nil" \
-    '(write-stdout "x")' \
+    '(write-stdout "")' \
     "n:()"
 
 # ======================================================================
@@ -306,7 +307,7 @@ test_multi "eval-string preserves outer state" \
 
 # eval-string empty program
 test_multi "eval-string empty string" \
-    "(#t . ())" \
+    "(#t)" \
     '(eval-string "")'
 
 # eval-string with multiple expressions returns last

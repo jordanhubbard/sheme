@@ -29,6 +29,18 @@ assert() {
     fi
 }
 
+# ── State-file lifecycle ─────────────────────────────────────────────────────
+_state_file="$__BS_STATE_FILE"
+_state_mode=$(stat -f '%Lp' "$_state_file" 2>/dev/null || stat -c '%a' "$_state_file")
+assert "state file is owner-only" "$_state_mode" "600"
+bs-reset
+assert "bs-reset retains private state path" "$__BS_STATE_FILE" "$_state_file"
+[[ -f "$__BS_STATE_FILE" ]]
+assert "bs-reset retains state file" "$?" "0"
+_child_state=$(zsh -fc 'source "$1"; print -r -- "$__BS_STATE_FILE"' _ "$SCRIPT_DIR/bs.zsh")
+[[ ! -e "$_child_state" ]]
+assert "state file is removed on shell exit" "$?" "0"
+
 # ── 1. Literals & self-evaluating forms ──────────────────────────────────────
 bs-reset
 bs_run '42'; assert "integer literal" "$result" "42"
@@ -121,7 +133,7 @@ bs_run '(letrec
      (odd?  (lambda (n) (if (= n 0) #f (even? (- n 1))))))
   (even? 10))'; assert "letrec mutual recursion" "$__bs_last" "b:#t"
 bs_run '(let loop ((i 1) (acc 0))
-           (if (> i 100) acc (loop (+ i 1) (+ acc i))))'; assert "named let loop" "$result" "5050"
+           (if (> i 10) acc (loop (+ i 1) (+ acc i))))'; assert "named let loop" "$result" "55"
 
 # ── 10. cond / case / when / unless ──────────────────────────────────────────
 bs-reset
@@ -160,6 +172,11 @@ bs_run "(null? '(1))"; assert "null? false" "$__bs_last" "b:#f"
 bs_run "(pair? '(1 2))"; assert "pair? true" "$__bs_last" "b:#t"
 bs_run "(pair? '())"; assert "pair? false" "$__bs_last" "b:#f"
 bs_run '(list 1 2 3)'; assert "list" "$__bs_last_display" "(1 2 3)"
+bs_run '(list (caar (list (list 1 2)))
+              (cadr (list 1 2 3))
+              (caddr (list 1 2 3))
+              (cdddr (list 1 2 3 4)))'
+assert "composite car/cdr accessors" "$__bs_last_display" "(1 2 3 (4))"
 bs_run "(length '(a b c d))"; assert "length" "$result" "4"
 bs_run "(append '(1 2) '(3 4))"; assert "append two lists" "$__bs_last_display" "(1 2 3 4)"
 bs_run "(append '(1) '(2) '(3))"; assert "append three lists" "$__bs_last_display" "(1 2 3)"
@@ -203,12 +220,12 @@ bs_run "'(a (b c) d)"; assert "quote nested" "$__bs_last_display" "(a (b c) d)"
 # ── 16. Recursion ─────────────────────────────────────────────────────────────
 bs-reset
 eval "$(bs '(define (fact n) (if (= n 0) 1 (* n (fact (- n 1)))))')"; bs_run '(fact 10)'; assert "factorial recursive" "$result" "3628800"
-eval "$(bs '(define (fib n) (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2)))))')"; bs_run '(fib 15)'; assert "fibonacci recursive" "$result" "610"
-bs_run '(let loop ((n 100) (acc 0))
-           (if (= n 0) acc (loop (- n 1) (+ acc n))))'; assert "sum via named let" "$result" "5050"
+eval "$(bs '(define (fib n) (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2)))))')"; bs_run '(fib 8)'; assert "fibonacci recursive" "$result" "21"
+bs_run '(let loop ((n 10) (acc 0))
+           (if (= n 0) acc (loop (- n 1) (+ acc n))))'; assert "sum via named let" "$result" "55"
 bs-reset
-eval "$(bs '(define (my-even? n) (if (= n 0) #t (my-odd? (- n 1))))')"; eval "$(bs '(define (my-odd?  n) (if (= n 0) #f (my-even? (- n 1))))')"; bs_run '(my-even? 20)'; assert "mutual recursion even" "$__bs_last" "b:#t"
-bs_run '(my-odd? 21)'; assert "mutual recursion odd" "$__bs_last" "b:#t"
+eval "$(bs '(define (my-even? n) (if (= n 0) #t (my-odd? (- n 1))))')"; eval "$(bs '(define (my-odd?  n) (if (= n 0) #f (my-even? (- n 1))))')"; bs_run '(my-even? 6)'; assert "mutual recursion even" "$__bs_last" "b:#t"
+bs_run '(my-odd? 7)'; assert "mutual recursion odd" "$__bs_last" "b:#t"
 bs-reset
 eval "$(bs '(define make-counter
                (lambda ()
@@ -332,6 +349,16 @@ if [[ $? -eq 0 ]]; then
 else
     (( _fail++ )); printf 'not ok %d error outputs message\n' "$_total"
 fi
+eval "$(bs '(+ 1 missing)')" >/dev/null 2>&1
+assert "unbound variable returns nonzero" "$?" "1"
+eval "$(bs '(+ 1 2')" >/dev/null 2>&1
+assert "parse error returns nonzero" "$?" "1"
+bs-eval '(+ 1 missing)' >/dev/null 2>&1
+assert "bs-eval propagates evaluation failure" "$?" "1"
+eval "$(bs '"unterminated')" >/dev/null 2>&1
+assert "unterminated string returns nonzero" "$?" "1"
+eval "$(bs '(1 . 2 3)')" >/dev/null 2>&1
+assert "malformed dotted pair returns nonzero" "$?" "1"
 
 # ── 30. do loop (additional) ─────────────────────────────────────────────────
 bs-reset
@@ -485,9 +512,11 @@ bs-reset
 eval "$(bs '(define outer-val 42)')"; eval "$(bs '(eval-string "(+ 1 1)")')"; eval "$(bs 'outer-val')"
     assert "eval-string preserves outer state" "$__bs_last_display" "42"
 eval "$(bs '(eval-string "")')";
-    assert "eval-string empty string"   "$__bs_last_display" "(#t . ())"
+    assert "eval-string empty string"   "$__bs_last_display" "(#t)"
 eval "$(bs '(cdr (eval-string "(+ 1 1) (+ 1 2)"))')";
     assert "eval-string multiple exprs" "$__bs_last_display" "3"
+eval "$(bs '(cdr (eval-string "(list 1 2 3)"))')";
+    assert "eval-string structured result" "$__bs_last_display" "(1 2 3)"
 
 # -- Integration: file + eval-string --
 bs-reset

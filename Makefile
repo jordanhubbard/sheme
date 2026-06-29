@@ -4,11 +4,13 @@ BUMP       ?= patch
 
 .DEFAULT_GOAL := help
 
-.PHONY: install uninstall check test test-io test-r5rs test-all benchmark \
-        example algorithms channels repl todo release help
+.PHONY: install uninstall check test test-compiler test-io test-r5rs \
+        test-examples test-all \
+        benchmark example example-bash example-zsh algorithms channels repl \
+        todo release help
 
 help: ## Show available make targets
-	@awk 'BEGIN {FS = ":.*##"}; /^[a-zA-Z_-]+:.*##/ { printf "  %-20s %s\n", $$1, $$2 }' \
+	@awk 'BEGIN {FS = ":.*##"}; /^[a-zA-Z0-9_-]+:.*##/ { printf "  %-20s %s\n", $$1, $$2 }' \
 	  $(MAKEFILE_LIST)
 
 install: ## Install bs.sh and bs.zsh to home directory
@@ -47,42 +49,56 @@ check: ## Validate shell syntax without running tests
 	@bash -n bs.sh && echo "  bs.sh:  Syntax OK"
 	@zsh -n bs.zsh && echo "  bs.zsh: Syntax OK"
 
-test: check ## Run bash (BATS) and zsh test suites
+test: check ## Run Bash, zsh, and AOT compiler test suites
 	@echo ""
 	@echo "── Bash tests ──"
 	@bats tests/bs.bats
 	@echo ""
 	@echo "── Zsh tests ──"
 	@zsh tests/bs-zsh.zsh
-
-test-io: ## Run terminal I/O builtin tests (bash only)
 	@echo ""
-	@echo "── I/O builtin tests (bash only) ──"
+	@echo "── AOT compiler tests ──"
+	@bash tests/compiler-tests.sh
+
+test-compiler: check ## Run Bash/zsh AOT compiler regression tests
+	@bash tests/compiler-tests.sh
+
+test-io: ## Run dedicated Bash I/O tests (zsh I/O is covered by make test)
+	@echo ""
+	@echo "── Dedicated Bash I/O builtin tests ──"
 	@bash tests/io-tests.sh
 
-test-r5rs: ## Run R5RS compatibility tests
+test-r5rs: ## Run R5RS-subset checks against the Bash interpreter
 	@echo ""
 	@echo "── R5RS compatibility tests ──"
 	@bash tests/r5rs-tests.sh
 
-test-all: test test-io test-r5rs ## Run all test suites (bash, zsh, R5RS, I/O)
+test-examples: check ## Run non-interactive regressions for larger examples
+	@bash tests/examples-tests.sh
+
+test-all: test test-io test-r5rs test-examples ## Run every test suite
 
 benchmark: ## Run performance benchmarks
 	@bash tests/benchmark.sh
 
-example: check ## Run the feature showcase demo
+example: example-bash example-zsh ## Run maintained Bash and zsh showcases
+
+example-bash: check ## Run the Bash-hosted feature showcase
 	@bash examples/demo.sh
 
-algorithms: check ## Run algorithmic examples
+example-zsh: check ## Run the zsh-hosted feature showcase
+	@zsh examples/demo.zsh
+
+algorithms: check ## Run maintained algorithmic examples
 	@bash examples/algorithms.sh
 
-channels: check ## Run concurrency pattern examples
+channels: check ## Run maintained shell-pipeline examples
 	@bash examples/channels.sh
 
 repl: check ## Launch the interactive REPL
 	@bash examples/repl.sh
 
-todo: check ## Launch the todo manager (usage shown)
+todo: check ## Show the task-manager example
 	@bash examples/todo.sh
 
 release: ## Create a release: make release BUMP=patch|minor|major

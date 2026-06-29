@@ -1,14 +1,27 @@
 # sheme examples
 
-Each example is a self-contained bash script that sources `bs.sh` from the
-repo root and exercises a different facet of the interpreter.  Run any of them
-from the **repo root**:
+Each example is a self-contained host script that sources the corresponding
+interpreter from the repo root. Run the Bash examples from the **repo root**:
 
 ```bash
 bash examples/<name>.sh
 ```
 
-or via the `make` shortcuts listed below.
+The maintained zsh showcase is `zsh examples/demo.zsh`. The `make` shortcuts
+listed below select the correct shell explicitly.
+
+## Current validation status
+
+- `demo.sh` and `demo.zsh` are the maintained smoke examples run together by
+  `make example` (or separately by `make example-bash` / `make example-zsh`).
+- `repl.sh` is a small interactive Bash wrapper and is not automated.
+- `algorithms.sh` and `channels.sh` are maintained, non-interactive examples;
+  their `make algorithms` and `make channels` targets complete successfully.
+- `todo.sh` supports persisted add/list/status workflows and is exposed by
+  `make todo`. `make test-examples` covers persistence, completion/deletion,
+  invalid IDs, and verifies that the long-running daemon blocks between
+  checks. Desktop notification and user-supplied command branches remain
+  host-dependent and are not fired by the automated gate.
 
 ---
 
@@ -22,6 +35,16 @@ bash examples/demo.sh
 A guided tour of sheme's core capabilities: arithmetic, list processing,
 higher-order functions, closures, string operations, and vector manipulation.
 Good starting point if you've never used sheme before.
+
+## demo.zsh — zsh feature showcase
+
+```zsh
+zsh examples/demo.zsh
+# or: make example-zsh
+```
+
+Exercises arithmetic, top-level definitions, closures, higher-order
+functions, strings, lists, and vectors through the zsh calling convention.
 
 ---
 
@@ -40,8 +63,8 @@ or `(quit)`.
 ```
 sheme REPL  (Ctrl-D or (quit) to exit)
 scm> (define (fib n) (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2)))))
-scm> (fib 20)
-6765
+scm> (fib 10)
+55
 scm> (quit)
 ```
 
@@ -54,32 +77,32 @@ bash examples/algorithms.sh
 # or: make algorithms
 ```
 
-Demonstrates that sheme is expressive enough for non-trivial programs.
-Implements and runs:
+Demonstrates that sheme is expressive enough for non-trivial programs:
 
 - **Merge sort** — recursive sort over lists
+- **Quicksort** — recursive partitioning with `filter`
 - **Binary search** — over a sorted vector
 - **Sieve of Eratosthenes** — prime numbers as a list filter
-- **Tree operations** — binary search tree insert/search using cons cells
-- **Ackermann function** — stress test for deep recursion
+- **Towers of Hanoi** — recursive move generation
 
 ---
 
-## channels.sh — CSP-style producer/consumer via shell pipes
+## channels.sh — Scheme + shell message passing
 
 ```bash
 bash examples/channels.sh
+# or: make channels
 ```
 
-Shows the Scheme-and-shell cooperation model: Scheme handles computation
-(generating work queues, transforming data, accumulating results) while bash
-orchestrates processes and I/O.  Uses temp files as message channels between
-a Scheme producer and shell consumer stages — a minimal communicating
-sequential processes pattern without any C or external tools.
+Shows the Scheme-and-shell cooperation model: Scheme constructs task messages,
+dispatches workers, computes results, and formats output while Bash hosts the
+interpreter. The example includes worker-style request/response messages and a
+Scheme insertion sort; it is illustrative message passing rather than a
+persistent concurrent queue.
 
 ---
 
-## todo.sh — Task manager with cron arms and shell automation
+## todo.sh — Task manager with reminders and shell automation
 
 ```bash
 # Add a task (interactive prompts)
@@ -119,10 +142,15 @@ Tasks are stored as Scheme source in `~/.local/share/sheme/todo.scm` (or
 and computes the exact sleep duration until the next due task rather than
 polling on a fixed interval.
 
-**sheme features demonstrated:** `file-read`, `file-write-atomic`,
+For deliberately simple source serialization and safe notification quoting,
+interactive task fields strip double quotes, backslashes, and apostrophes.
+Dollar signs and backticks are preserved; the shell-command arm is still
+intentional executable input and must be treated accordingly.
+
+**Exercised sheme features:** `file-read`, `file-write-atomic`,
 `eval-string`, `shell-capture`, `shell-exec`, closures as struct accessors,
 `filter`/`map`/`for-each`/`foldl`.
 
-**Dependencies:** bash 4+, and optionally `inotifywait` (Linux) or
-`fswatch` (macOS) for instant daemon wakeup on file change; falls back to
-a 300-second poll if neither is installed.
+**Dependencies:** Bash 4.3+, standard date/process/file utilities, and
+optionally `inotifywait` (Linux) or `fswatch` (macOS) for instant daemon wakeup
+on file change; it falls back to a 300-second poll if neither is installed.

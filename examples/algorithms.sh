@@ -59,8 +59,8 @@ bs '(define (bsearch vec target)
                       ((< val target) (loop (+ mid 1) hi))
                       (else           (loop lo (- mid 1)))))))))'
 bs '(define sorted (list->vector (list 1 3 5 7 9 11 13 15 17 19)))'
-bs-eval "(bsearch sorted 11)"   ; => 5
-bs-eval "(bsearch sorted 6)"    ; => -1
+bs-eval "(bsearch sorted 11)"   # => 5
+bs-eval "(bsearch sorted 6)"    # => -1
 
 # ─────────────────────────────────────────────────────────────────────────────
 banner "Sieve of Eratosthenes (primes up to 50)"

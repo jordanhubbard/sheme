@@ -1,9 +1,26 @@
 # sheme
-sheme — a Scheme interpreter in bash/zsh.  Its purpose is to be an intermediate language for shell scripts that will look less bad when written in an HONORABLE language like scheme.
+
+sheme is a Scheme interpreter for Bash and zsh, plus an ahead-of-time (AOT)
+compiler that emits native shell functions. Its purpose is to be an
+intermediate language for shell scripts that look less bad when written in an
+HONORABLE language like Scheme.
+
+Both interpreter backends implement the same Scheme subset, including the
+terminal, file, shell-command, and runtime-evaluation extensions. The public
+calling convention differs slightly because the Bash interpreter keeps state
+in the current shell while the zsh interpreter isolates each `bs` call and
+serializes its state between calls. The AOT compiler also has maintained Bash
+and zsh targets. Both targets are covered by compiler regressions and by the
+shemacs editor's interactive integration suite.
 
 ## Preface
 
-I write a lot of bash scripts.  Bash is turing complete (or this "transpiler" would not be possible) but its scripts look ugly in my .bashrc.  Other people use zsh.  These are people who I am sure are perfectly honorable in every way and who's personal life choices can almost certainly be rationalized, even when such choices include "using zsh."  In support of these people, and I am fully prepared to defend their status as people, I wish to therefore make it perfectly clear up-front that when I say "bash" in the rest of this README, I mean "bash and zsh" because there is a version of this for *them*, too.  I am nothing if not inclusive!
+I write a lot of Bash scripts. Bash is Turing complete (or this interpreter
+would not be possible), but its scripts look ugly in my `.bashrc`. Other people
+use zsh. These are people who I am sure are perfectly honorable in every way
+and whose personal life choices can almost certainly be rationalized, even
+when such choices include "using zsh." Both are first-class sheme runtimes;
+shell-specific examples below are labeled because their invocation differs.
 
 ## Foundational premises
 
@@ -11,39 +28,118 @@ I write a lot of bash scripts.  Bash is turing complete (or this "transpiler" wo
 2. Scheme is a *REAL* programming language, one worthy of respect and veneration.
 3. Therefore, writing shell code in Scheme will make you cool and similarly worthy of respect and veneration.
 4. You don't want to have to install a full scheme interpreter though.  That's way too much work, and it involves Life Decisions after reading scheme.org in detail.  Questions like:  "*WHICH* scheme?  How *MUCH* scheme is the _right amount_?  Should I go "classic" with r5rs or should I go for *ALL THE MARBLES* with r7rs?  Wait, isn't R7rs *TOO LARGE* though?  Should I ask this question on Reddit?  Oh god!  I don't want to ask this question on Reddit!"
-5. Hey!  I know what I'll do!  It's time for me to choose sheme!  The no-compromise, no executables option!
+5. Hey! I know what I'll do! It's time for me to choose sheme! No separate
+   Scheme runtime required.
+
+## Requirements
+
+- Bash 4.3+ for `bs.sh` and the AOT compiler
+- zsh 5+ for `bs.zsh` and zsh-targeted AOT output
+- Standard command-line utilities: `mktemp`, `chmod`, `cat`, and `rm` for zsh
+  state transport; `stty`, `tput`, and `mv` for the extension layer; Bash
+  raw-terminal mode also uses `dd`
+
+The parser, evaluator, arithmetic, and ordinary string/list/vector operations
+use shell facilities. Terminal, file, and shell-command extensions deliberately
+cross that boundary and use the utilities listed above.
 
 ## Quick Start
 
+Clone the repository first:
+
 ```bash
-# Clone the repository
 git clone https://github.com/jordanhubbard/sheme.git
 cd sheme
-
-# Source it in your current shell
-source bs.sh    # or bs.zsh for The Other People
-
-# bs-eval evaluates an expression and prints the result to stdout
-bs-eval '(+ 1 2 3 4 5)'               # prints: 15
-bs-eval '(string-upcase "honorable")'  # prints: HONORABLE
-
-# bs evaluates silently — use it to define things and build up state.
-# Top-level define/set! values are exported as bash globals.
-bs '(define (factorial n) (if (= n 0) 1 (* n (factorial (- n 1)))))'
-bs-eval '(factorial 10)'   # prints: 3628800
-
-# After any bs or bs-eval call, the raw tagged result is in $__bs_last
-# and the display form is in $__bs_last_display
-bs '(define x 42)'
-echo "$x"                  # => i:42  (tagged: "i:" prefix means integer)
-echo "$__bs_last_display"  # => 42    (human-readable)
-
-# bs-reset wipes all interpreter state
-bs-reset
-
-# Or just run the demo
-make example
 ```
+
+### Bash
+
+```bash
+source ./bs.sh
+
+bs-eval '(+ 1 2 3 4 5)'               # 15
+bs-eval '(string-upcase "honorable")'  # HONORABLE
+
+# bs evaluates inline and keeps definitions in this shell.
+bs '(define (factorial n) (if (= n 0) 1 (* n (factorial (- n 1)))))'
+bs-eval '(factorial 10)'                # 3628800
+
+bs '(define x 42)'
+bs 'x'
+echo "$x"                  # i:42 (the tagged representation)
+echo "$__bs_last_display"  # 42   (the human-readable result)
+```
+
+### zsh
+
+```zsh
+source ./bs.zsh
+
+bs-eval '(+ 1 2 3 4 5)'               # 15
+bs-eval '(string-upcase "honorable")'  # HONORABLE
+
+# Plain bs emits typeset commands. Evaluate them to import top-level bindings
+# and the result variables into the calling zsh process.
+eval "$(bs '(define (factorial n) (if (= n 0) 1 (* n (factorial (- n 1)))))')"
+bs-eval '(factorial 10)'                # 3628800
+
+eval "$(bs '(define x 42)')"
+eval "$(bs 'x')"
+echo "$x"                  # i:42
+echo "$__bs_last_display"  # 42
+```
+
+In either shell, `bs-reset` clears interpreter state. `bs-eval` prints the
+display form and, under zsh, evaluates the generated parent-shell assignments
+for you. Only top-level Scheme names that are valid shell identifiers are also
+exported as named shell variables; all bindings remain available inside Scheme.
+Tokenizer, parser, and evaluator errors stop at the first failing expression
+and return a nonzero status; the message is also available in
+`$__bs_last_error`.
+
+### Public API and AOT compiler
+
+| Entry point | Defined by | Behavior |
+|---|---|---|
+| `bs source` | `bs.sh`, `bs.zsh` | Evaluate source. Bash mutates the current shell; zsh emits commands for `eval`. |
+| `bs-eval source` | `bs.sh`, `bs.zsh` | Evaluate and print the display form. |
+| `bs-reset` | `bs.sh`, `bs.zsh` | Clear interpreter state. |
+| `bs-run source` | `bs.zsh` | Run an interactive direct-I/O expression, routing output to the terminal. |
+| `bs-compile [options] source` | `bs.sh` | Emit Bash from Scheme. |
+| `bs-compile-zsh [options] source` | `bs.sh` | Emit zsh from Scheme; invoke the compiler under Bash. |
+
+The AOT compiler lives in `bs.sh`; `bs.zsh` is the zsh interpreter, not the
+compiler host. The compiler is a pragmatic subset rather than a promise that
+every interpreted form can be compiled, but its supported operations have the
+same semantics on both output targets. Dynamic string and vector indexing is
+emitted portably and is exercised by the compiler suite and shemacs.
+
+Applications can inject a portable shell runtime and replace Scheme functions
+that need a specialized representation:
+
+```bash
+bs-compile \
+  --runtime ./application-runtime.sh \
+  --replace-functions "state-save state-restore" \
+  "$(< program.scm)" > program.sh
+
+bs-compile-zsh --runtime ./application-runtime.sh \
+  "$(< program.scm)" > program.zsh
+```
+
+Functions defined by the injected runtime are automatically excluded from the
+generated Scheme definitions; `--replace-functions` is available when a
+runtime's public function names cannot be discovered automatically. The
+runtime must be valid in the selected target shell. Application-specific code,
+including shemacs's nested buffer runtime, belongs with the application rather
+than in sheme's compiler.
+
+One representation boundary is deliberate: compiled `eval-string` calls the
+interpreter, but interpreter heap objects cannot be imported into the AOT
+array model. Its success cdr is therefore the displayed result string, whereas
+interpreted `eval-string` returns the raw Scheme value documented below. A
+compiled program using that primitive must load `bs.sh` or `bs.zsh` in its host
+shell, as the shemacs launchers do.
 
 ## Make Targets
 
@@ -51,31 +147,40 @@ make example
 |--------|-------------|
 | `make install` | Copy `bs.sh` and `bs.zsh` to `~/` and add `source` lines to `~/.bashrc` and `~/.zshrc` |
 | `make uninstall` | Remove the copied files and `source` lines from rc files |
-| `make check` | Syntax-check both bash and zsh versions |
-| `make test` | Run the interpreter test suite (177 bash + 202 zsh tests) |
-| `make test-io` | Run the I/O builtin test suite (41 tests, bash only) |
-| `make test-r5rs` | Run the R5RS compatibility test suite (~123 tests) |
-| `make test-all` | Run everything: interpreter + I/O + R5RS tests |
+| `make check` | Syntax-check both Bash and zsh versions |
+| `make test` | Run the Bash interpreter, zsh interpreter/extension, and two-target compiler suites |
+| `make test-compiler` | Run focused Bash/zsh AOT compiler regressions |
+| `make test-io` | Run the dedicated 41-case Bash I/O harness (zsh I/O is covered by `make test`) |
+| `make test-r5rs` | Run 123 R5RS-subset checks against Bash (117 pass, 6 documented skips) |
+| `make test-examples` | Exercise algorithms, channels, todo persistence, and the todo daemon wait loop |
+| `make test-all` | Run everything: interpreter + compiler + I/O + R5RS + example regressions |
 | `make benchmark` | Run performance benchmarks for all language primitives |
-| `make example` | Run the feature demo script |
-| `make release` | Generate CHANGELOG, run tests, tag, and create GitHub release (default: patch bump) |
+| `make example` | Run maintained Bash- and zsh-hosted feature demos |
+| `make release` | Run gates, update CHANGELOG, tag, and create a GitHub release (default: patch bump) |
 | `make release BUMP=minor` | Same, but bump minor version |
 | `make release BUMP=major` | Same, but bump major version |
 
 ## Contributor Pre-Push Checks
 
-Before every push, run and pass these targets in both bash and zsh shells:
+The Makefile selects the required shell for each suite, so run these once from
+the repository root:
 
 ```bash
-make test
+make test-all
 make example
 ```
 
-## Terminal I/O Builtins
+The examples include maintained Bash and zsh smoke demos plus larger Bash-hosted
+programs. See [examples/README.md](examples/README.md) for the purpose and
+invocation of each one.
 
-sheme provides terminal I/O primitives as builtins, enabling Scheme
-programs to interact directly with the terminal.  **Bash only** (requires
-bash 4+) — these builtins need direct file descriptor access.
+## Terminal, File, and Shell Extensions
+
+sheme provides the same extension primitives in both interpreters. Bash uses
+`read -n` (and a `dd` coprocess in raw mode); zsh uses `read -k`. In zsh,
+ordinary stateful calls use `eval "$(bs ...)"`, while interactive expressions
+that call `write-stdout` should use `bs-run` so user output is not mixed with
+the generated `typeset` commands on stdout.
 
 | Builtin | Description |
 |---------|-------------|
@@ -85,9 +190,30 @@ bash 4+) — these builtins need direct file descriptor access.
 | `(terminal-size)` | Returns `(rows . cols)` as a pair. |
 | `(terminal-raw!)` | Enter raw mode (saves previous stty state). |
 | `(terminal-restore!)` | Restore terminal to saved state. |
+| `(terminal-suspend!)` | Suspend the current process with `SIGTSTP`. |
 | `(file-read path)` | Read entire file as a string, or `#f` on error. |
 | `(file-write path content)` | Write string to file (with trailing newline). Returns `#t`/`#f`. |
-| `(eval-string code)` | Evaluate Scheme code at runtime. Returns `(#t . result)` or `(#f . error)`. |
+| `(file-write-atomic path content)` | Write through a temporary sibling and rename it into place. |
+| `(file-glob prefix)` | Return paths beginning with `prefix`. |
+| `(file-directory? path)` | Return whether `path` is a directory. |
+| `(shell-capture command)` | Evaluate a shell command and return captured stdout, or `#f`. |
+| `(shell-exec command input)` | Pipe `input` to a shell command and return success as a boolean. |
+| `(eval-string code)` | Evaluate code at runtime. Returns `(#t . value)` on success or `(#f . error-string)` on failure. |
+
+Shell variables cannot represent NUL bytes, and command substitution removes
+trailing newlines. Consequently, `file-read` and `shell-capture` are text
+interfaces rather than byte-preserving binary interfaces. `shell-capture` and
+`shell-exec` intentionally evaluate command strings; never pass untrusted text
+to them.
+
+## Language Scope
+
+sheme implements an integer-only, deliberately pragmatic R5RS subset. The
+compatibility suite explicitly skips unquote-splicing, `call/cc`,
+`dynamic-wind`, `delay`/`force`, hygienic macros, and floating-point
+arithmetic. Some names for unsupported features exist as compatibility stubs;
+their presence is not an R5RS conformance claim. There is no tail-call
+optimization, so deep recursion is limited by the host shell.
 
 ## The Totally True and Not At All Embellished History of sheme
 
@@ -134,9 +260,15 @@ The editor was now *pure*.  Shell-neutral.  1,300 lines of Scheme that handled e
 
 Sir Reginald knocked the programmer's coffee off the desk.  Not out of malice.  Out of *editorial judgment*.
 
-The editor itself has since moved to its own home at [shemacs](https://github.com/jordanhubbard/shemacs), where it lives alongside its bash and zsh siblings.  sheme continues as a pure Scheme interpreter for shell programmers, and the terminal I/O builtins remain for anyone who wants to write *real programs* entirely in Scheme.
+The editor itself has since moved to its own home at [shemacs](https://github.com/jordanhubbard/shemacs), where the same Scheme source is compiled to Bash and zsh. sheme continues as a Scheme interpreter and AOT compiler for shell programmers, and the terminal I/O builtins remain for anyone who wants to write *real programs* entirely in Scheme.
 
-As of this writing, sheme implements a reasonable subset of R5RS Scheme, passes 548 tests across both shells (including 123 R5RS compatibility tests and 41 I/O builtin tests).  It has been used in production by exactly one person, who also wrote it.  Sir Reginald continues to withhold his endorsement, citing "procedural concerns" and "insufficient tuna."
+As of this writing, sheme implements a reasonable subset of R5RS Scheme. The
+full test gate covers both interpreters, both AOT output targets, terminal/file
+I/O, and the R5RS subset; six unsupported R5RS features are explicitly skipped.
+The zsh suite includes its own terminal/file I/O coverage, while the dedicated
+I/O and R5RS harnesses currently run against Bash. It has been used in
+production by exactly one person, who also wrote it. Sir Reginald continues to
+withhold his endorsement, citing "procedural concerns" and "insufficient tuna."
 
 The project motto remains: **"It's not about whether you *should*.  It's about whether you *can*.  And also whether your cat respects you.  (He doesn't.)"**
 
@@ -180,13 +312,18 @@ sheme now has terminal I/O, file I/O, and runtime eval.  This means you can writ
 
 ## Addendum: I Got Bored and Built One
 
+> **Current status:** `todo.sh` is a maintained example. Its persisted
+> add/list/done/delete paths and daemon wait behavior run under
+> `make test-examples`; desktop notifications and user commands remain
+> host-dependent. See [the examples status](examples/README.md#current-validation-status).
+
 Look, the list above was meant as inspiration.  Aspirational.  A gentle nudge toward the horizon.
 
 Then I got bored.
 
 The "TODO App / Personal Wiki" entry caught my eye specifically because it seemed like a reasonable thing to actually build — file I/O, list processing, maybe a daemon.  Fine.  Straightforward.  And then one thing led to another, and what started as a weekend sketch turned into something with a full event-driven synchronization model, two-armed tasks (a *human* arm that notifies you and a *shell* arm that runs a command), inotifywait/fswatch integration so the daemon wakes up instantly instead of polling, and a Scheme function that computes the exact number of seconds until the next due task so the sleep is precise.
 
-It is, to be clear, a TODO app implemented as a Scheme interpreter embedded in bash, where the task list is stored as Scheme source that gets eval'd back at startup, and the daemon receives SIGUSR1 to interrupt its `read -t` sleep whenever the file changes.  This is either an elegant demonstration of sheme's capabilities or a cry for help.  Possibly both.
+It is, to be clear, a TODO app implemented as a Scheme interpreter embedded in bash, where the task list is stored as Scheme source that gets eval'd back at startup. The daemon blocks in `wait -n` on a precise timer and an optional filesystem watcher; other todo processes send SIGUSR1 to interrupt that wait immediately after a mutation. This is either an elegant demonstration of sheme's capabilities or a cry for help. Possibly both.
 
 Sir Reginald has reviewed it.  He knocked it off the desk.  I choose to interpret this as approval.
 

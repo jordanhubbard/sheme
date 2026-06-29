@@ -2,31 +2,47 @@
 # bs.zsh - Scheme interpreter in Zsh
 # Source this file; then call:  eval "$(bs '<scheme source>')"
 #
-# Public API (only these 3 functions are defined in the caller's namespace):
+# Public entry points:
 #   bs         <src>   - evaluate Scheme source, output shell commands for eval
 #   bs-reset           - wipe persistent state between sessions
 #   bs-eval    <src>   - convenience: evaluate and print human-readable result
+#   bs-run     <src>   - run an interactive expression with direct terminal I/O
 
 [[ -n "${_SHEME_ZSH_LOADED:-}" ]] && return 0
 _SHEME_ZSH_LOADED=1
 
 # ──────────────────────────────────────────────────────────────────────────────
-# State-file path (unique per top-level shell session)
+# State-file path (private and unique per top-level shell session)
 # ──────────────────────────────────────────────────────────────────────────────
-__BS_STATE_FILE="${TMPDIR:-/tmp}/__bs_state_$$"
+typeset -g __BS_STATE_FILE
+if ! __BS_STATE_FILE="$(
+    umask 077
+    mktemp "${TMPDIR:-/tmp}/sheme-zsh-state.XXXXXXXX"
+)"; then
+    print -u2 "sheme: unable to create a private state file"
+    return 1 2>/dev/null || exit 1
+fi
+
+# zsh offers an exit-hook array, so cleanup does not replace a caller's traps.
+__bs_cleanup_state_file() {
+    [[ -n "${__BS_STATE_FILE:-}" ]] && command rm -f -- "$__BS_STATE_FILE"
+}
+typeset -ga zshexit_functions
+zshexit_functions+=(__bs_cleanup_state_file)
 
 # ──────────────────────────────────────────────────────────────────────────────
 # bs - main interpreter entry point
 #
 # All internal functions and state are defined inside this function.
-# Since bs() is always invoked inside $(...) (a subshell), none of the
-# internal __bs_* functions or associative arrays leak into the caller's
-# namespace.
+# Ordinary calls capture bs() in $(...). bs-run instead calls it inside its own
+# subshell. In either path, local __bs_* functions and arrays do not leak into
+# the caller's namespace.
 # ──────────────────────────────────────────────────────────────────────────────
 bs() {
     emulate -L zsh
     setopt KSH_ARRAYS
     local _src="$1"
+    local -i _bs_status=0
 
     # ── State variables (local to this subshell invocation) ───────────────
     local -A __bs_car=() __bs_cdr=()
@@ -114,7 +130,8 @@ bs() {
             not) return 0 ;;
             'number?'|'string?'|'symbol?'|'boolean?'|'procedure?'|'pair?'|'null?'|'list?') return 0 ;;
             'zero?'|'positive?'|'negative?'|'even?'|'odd?') return 0 ;;
-            cons|car|cdr|'set-car!'|'set-cdr!'|list|length|append|reverse) return 0 ;;
+            cons|car|cdr|c[ad][ad]r|c[ad][ad][ad]r|c[ad][ad][ad][ad]r|\
+            'set-car!'|'set-cdr!'|list|length|append|reverse) return 0 ;;
             'list-tail'|'list-ref'|map|'for-each'|filter|assoc|assv|assq|member|memv|memq) return 0 ;;
             'string-length'|'string-append'|substring|'string->number'|'number->string') return 0 ;;
             'string->symbol'|'symbol->string'|'string=?'|'string<?'|'string>?') return 0 ;;
@@ -150,7 +167,7 @@ bs() {
     __bs_tokenize() {
         local src="$1"
         __bs_tokens=()
-        local i=0 len=${#src} c tok
+        local i=0 len=${#src} c tok closed
 
         while (( i < len )); do
             c="${src:$i:1}"
@@ -196,11 +213,12 @@ bs() {
             # String literals
             if [[ "$c" == '"' ]]; then
                 tok='"'
+                closed=0
                 (( i++ ))
                 while (( i < len )); do
                     c="${src:$i:1}"
                     if [[ "$c" == '"' ]]; then
-                        tok+='"'; (( i++ )); break
+                        tok+='"'; (( i++ )); closed=1; break
                     elif [[ "$c" == $'\\' ]]; then
                         tok+="${c}${src:$((i+1)):1}"
                         (( i += 2 ))
@@ -208,6 +226,10 @@ bs() {
                         tok+="$c"; (( i++ ))
                     fi
                 done
+                if (( ! closed )); then
+                    __bs_error "parse: unterminated string"
+                    return 1
+                fi
                 __bs_tokens+=("$tok")
                 continue
             fi
@@ -223,6 +245,7 @@ bs() {
             done
             [[ -n "$tok" ]] && __bs_tokens+=("$tok")
         done
+        return 0
     }
 
     # ── Parser ────────────────────────────────────────────────────────────
@@ -272,6 +295,10 @@ bs() {
                 __bs_cons "y:unquote-splicing" "$args"
                 return 0
                 ;;
+            ')')
+                __bs_error "parse: unexpected ')'"
+                return 1
+                ;;
             *)
                 __bs_parse_atom "$tok"
                 return 0
@@ -281,8 +308,8 @@ bs() {
 
     __bs_parse_list() {
         if (( __bs_tpos >= ${#__bs_tokens[@]} )); then
-            __bs_ret="n:()"
-            return 0
+            __bs_error "parse: unexpected end of list"
+            return 1
         fi
 
         local tok="${__bs_tokens[$__bs_tpos]}"
@@ -298,7 +325,12 @@ bs() {
             (( __bs_tpos++ ))
             __bs_parse_expr || return 1
             local cdr_val="$__bs_ret"
-            (( __bs_tpos++ ))     # consume closing ')'
+            if (( __bs_tpos >= ${#__bs_tokens[@]} )) || \
+               [[ "${__bs_tokens[$__bs_tpos]}" != ')' ]]; then
+                __bs_error "parse: dotted pair missing closing ')'"
+                return 1
+            fi
+            (( __bs_tpos++ ))
             __bs_ret="$cdr_val"
             return 0
         fi
@@ -1073,6 +1105,24 @@ bs() {
             'f:cdr')
                 [[ "${args[0]:0:2}" != 'p:' ]] && { __bs_error "cdr: not a pair: ${args[0]}"; return 1; }
                 __bs_ret="${__bs_cdr[${args[0]}]}" ;;
+            'f:'c[ad][ad]r|'f:'c[ad][ad][ad]r|'f:'c[ad][ad][ad][ad]r)
+                # R5RS composite accessors apply their a/d operations right-to-left.
+                local _ops="${proc#f:c}"
+                _ops="${_ops%r}"
+                local _value="${args[0]}" _op
+                for (( _k=${#_ops}-1; _k>=0; _k-- )); do
+                    [[ "${_value:0:2}" != 'p:' ]] && {
+                        __bs_error "${proc#f:}: not a pair: $_value"
+                        return 1
+                    }
+                    _op="${_ops:$_k:1}"
+                    if [[ "$_op" == a ]]; then
+                        _value="${__bs_car[$_value]}"
+                    else
+                        _value="${__bs_cdr[$_value]}"
+                    fi
+                done
+                __bs_ret="$_value" ;;
             'f:set-car!')
                 __bs_car[${args[0]}]="${args[1]}"; __bs_ret="n:()" ;;
             'f:set-cdr!')
@@ -1369,11 +1419,11 @@ bs() {
                 local -a _saved_tokens=("${__bs_tokens[@]}")
                 local _saved_tpos="$__bs_tpos"
                 __bs_last_error=""
-                __bs_tokenize "$_eval_src"
+                local _eval_ok=1
+                __bs_tokenize "$_eval_src" || _eval_ok=0
                 __bs_tpos=0
                 __bs_ret="n:()"
-                local _eval_ok=1
-                while (( __bs_tpos < ${#__bs_tokens[@]} )); do
+                while (( _eval_ok && __bs_tpos < ${#__bs_tokens[@]} )); do
                     if ! __bs_parse_expr; then _eval_ok=0; break; fi
                     if ! __bs_eval "$__bs_ret" "0"; then _eval_ok=0; break; fi
                 done
@@ -1381,9 +1431,8 @@ bs() {
                 __bs_tokens=("${_saved_tokens[@]}")
                 __bs_tpos="$_saved_tpos"
                 if (( _eval_ok )); then
-                    __bs_display "$_result_val"
-                    local _disp="$__bs_ret"
-                    __bs_cons "b:#t" "s:$_disp"
+                    # Preserve the evaluated value, including pairs and vectors.
+                    __bs_cons "b:#t" "$_result_val"
                 else
                     local _err="${__bs_last_error:-unknown error}"
                     __bs_cons "b:#f" "s:$_err"
@@ -1541,19 +1590,34 @@ bs() {
 
     # Load state from previous calls (survives subshell boundary via file)
     # shellcheck disable=SC1090
-    [[ -f "${__BS_STATE_FILE}" ]] && source "${__BS_STATE_FILE}"
+    [[ -f "${__BS_STATE_FILE}" && -O "${__BS_STATE_FILE}" ]] && source "${__BS_STATE_FILE}"
 
     # Single output file: accumulates top-level assignments AND I/O stmts
-    __bs_output_file="$(mktemp)"
+    __bs_output_file="$(
+        umask 077
+        mktemp "${TMPDIR:-/tmp}/sheme-zsh-output.XXXXXXXX"
+    )" || {
+        __bs_error "unable to create a private output file"
+        return 1
+    }
 
     # Tokenize -> parse -> eval all top-level expressions
-    __bs_tokenize "$_src"
+    __bs_last_error=""
+    if ! __bs_tokenize "$_src"; then
+        _bs_status=1
+    fi
     __bs_tpos=0
     __bs_ret="n:()"
 
-    while (( __bs_tpos < ${#__bs_tokens[@]} )); do
-        __bs_parse_expr || break
-        __bs_eval "$__bs_ret" "0" || true
+    while (( _bs_status == 0 && __bs_tpos < ${#__bs_tokens[@]} )); do
+        if ! __bs_parse_expr; then
+            _bs_status=1
+            break
+        fi
+        if ! __bs_eval "$__bs_ret" "0"; then
+            _bs_status=1
+            break
+        fi
     done
 
     __bs_last="$__bs_ret"
@@ -1585,6 +1649,7 @@ bs() {
         done
         [[ -n "$__bs_stty_saved" ]] && printf '__bs_stty_saved=%q\n' "$__bs_stty_saved"
     } > "${__BS_STATE_FILE}"
+    chmod 600 "${__BS_STATE_FILE}" 2>/dev/null
 
     # ── Emit output for eval ──
     # Top-level bindings and I/O produced this call (in evaluation order)
@@ -1598,29 +1663,47 @@ bs() {
     # Last value (tagged and display form)
     printf 'typeset -g __bs_last=%q\n' "$__bs_last"
     printf 'typeset -g __bs_last_display=%q\n' "$_last_display"
+    printf 'typeset -g __bs_last_error=%q\n' "$__bs_last_error"
+    (( _bs_status == 0 )) || printf 'false\n'
+    return "$_bs_status"
 }
 
 # ──────────────────────────────────────────────────────────────────────────────
 # bs-reset: wipe persistent state (call between independent test sessions)
 # ──────────────────────────────────────────────────────────────────────────────
 bs-reset() {
-    rm -f "${__BS_STATE_FILE}"
-    unset __bs_last __bs_last_display 2>/dev/null || true
+    # Keep the random pathname reserved rather than removing and predictably
+    # recreating it; truncating also preserves its owner-only permissions.
+    : > "${__BS_STATE_FILE}"
+    chmod 600 "${__BS_STATE_FILE}" 2>/dev/null
+    unset __bs_last __bs_last_display __bs_last_error 2>/dev/null || true
 }
 
 # ──────────────────────────────────────────────────────────────────────────────
 # bs-eval: convenience wrapper - evaluate and capture display value
 # ──────────────────────────────────────────────────────────────────────────────
 bs-eval() {
-    eval "$(bs "$1")"
-    printf '%s\n' "$__bs_last_display"
+    local _output
+    local -i _status
+    if _output="$(bs "$1")"; then
+        eval "$_output"
+        printf '%s\n' "$__bs_last_display"
+        return 0
+    else
+        # Capture the failed command-substitution status inside the else arm;
+        # the status of an if statement with no selected branch is otherwise 0.
+        _status=$?
+        eval "$_output" || true
+        return "$_status"
+    fi
 }
 
 # ──────────────────────────────────────────────────────────────────────────────
 # bs-run: run an expression with direct terminal I/O (for interactive programs)
 #
 # Unlike bs/eval "$(bs ...)", this discards the typeset output and routes
-# write-stdout directly to /dev/tty.  Used by em.scm.zsh and similar launchers.
+# write-stdout directly to /dev/tty. Use it for interactive interpreted
+# programs whose user output must not be mixed with bs()'s typeset commands.
 # ──────────────────────────────────────────────────────────────────────────────
 bs-run() {
     local _bs_run_src="$1"

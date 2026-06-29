@@ -11,15 +11,16 @@ Open a GitHub issue. Include:
 
 1. Fork the repo and create a feature branch from `main`.
 2. Make your changes.
-3. Before every push, run and pass `make test` and `make example` in both
-   bash and zsh shells.
-4. Verify all tests pass: `make test-all`
+3. Before every push, run `make test-all` and `make example` once from the
+   repository root. The Makefile invokes Bash or zsh for each target.
+4. Verify that no test is reported as failed and that only the six documented
+   unsupported R5RS features are skipped.
 5. Open a PR against `main` with a clear description of what changed and why.
 
 ### PR Checklist
 
-- [ ] `make test-all` passes (bash, zsh, R5RS, and I/O test suites)
-- [ ] Before each push, `make test` and `make example` pass in both bash and zsh
+- [ ] `make test-all` passes (Bash, zsh, AOT, R5RS, and I/O suites)
+- [ ] `make example` passes (maintained Bash and zsh demos)
 - [ ] `make check` passes (syntax validation)
 - [ ] New builtins or behaviour changes are covered by tests in `tests/bs.bats`
   and `tests/bs-zsh.zsh`
@@ -29,12 +30,17 @@ Open a GitHub issue. Include:
 
 ```bash
 make check          # syntax validation only (fast)
-make test           # bash (BATS) and zsh test suites
-make test-io        # terminal I/O builtin tests (bash only)
-make test-r5rs      # R5RS compatibility suite
-make test-all       # everything above
+make test           # Bash + zsh interpreter suites and both AOT targets
+make test-compiler  # focused Bash/zsh compiler regressions
+make test-io        # dedicated 41-case Bash I/O harness
+make test-r5rs      # 123 R5RS-subset checks against Bash (6 skips)
+make test-examples  # maintained algorithms/channels/todo regressions
+make test-all       # all suites above
 make benchmark      # performance benchmarks
 ```
+
+GitHub Actions runs the same `make test-all` and `make example` gates on
+Ubuntu and macOS.
 
 ## Commit Messages
 
@@ -42,8 +48,8 @@ Use [Conventional Commits](https://www.conventionalcommits.org/) — the release
 script uses these to categorize changelog entries automatically:
 
 ```
-feat: add call/cc (call-with-current-continuation)
-fix: correct tail-call optimization for mutual recursion
+feat: add unquote-splicing support
+fix: preserve zsh state across nested eval-string calls
 docs: document bs-eval vs bs usage
 refactor: extract number parser into _bs_parse_number
 chore: update CI to use actions/checkout@v4
@@ -51,14 +57,22 @@ chore: update CI to use actions/checkout@v4
 
 ## Code Conventions
 
-- **bash version (`bs.sh`)**: requires bash 4.3+; use `[[ ]]`, `local`, arrays.
-  Avoid bashisms that fail under `bash -n`.
-- **zsh version (`bs.zsh`)**: use native zsh syntax; keep parallel with `bs.sh`.
-- Both files are sourced into the user's shell — keep the global namespace clean.
-  All internal names are prefixed `_bs_`.
-- No external runtime dependencies beyond bash/zsh builtins.
-- The interpreter state lives in shell variables (`_bs_env`, `_bs_heap`, etc.);
-  avoid subshells in hot paths as they fork the whole interpreter state.
+- **Bash (`bs.sh`)**: requires Bash 4.3+. The interpreter runs inline and its
+  global helpers/state are visible, so all internals must retain the `__bs_` or
+  `__bsc_` prefix. This file also hosts both AOT compiler targets.
+- **zsh (`bs.zsh`)**: requires zsh 5+. Interpreter internals are local to
+  `bs()`, and persistent fields must be serialized through the private,
+  owner-only `__BS_STATE_FILE`.
+- Keep Scheme semantics and extension builtins aligned across both files even
+  where their shell implementation differs.
+- Core evaluation should avoid external processes in hot paths. Terminal,
+  file, and shell-command extensions intentionally use standard utilities.
+- Keep the AOT compiler application-neutral. Programs that need specialized
+  nested state should use `--runtime` and, when needed, `--replace-functions`.
+  shemacs owns its runtime in `../shemacs/em.aot-runtime.sh`.
+- Compiler changes need focused coverage in `tests/compiler-tests.sh` and must
+  be checked in both output shells. Changes affecting shemacs also require its
+  Bash and zsh integration suites.
 
 ## Release Process
 
@@ -70,5 +84,7 @@ make release BUMP=minor
 make release BUMP=major
 ```
 
-This runs the full test suite, updates `CHANGELOG.md`, tags, and creates a
-GitHub release.
+This runs the full test and example gates before changing files, updates
+`CHANGELOG.md`, tags, and creates a GitHub release. A retry recognizes an
+existing version heading or a tag already at `HEAD`, so a transient GitHub
+failure does not silently bump the version twice.

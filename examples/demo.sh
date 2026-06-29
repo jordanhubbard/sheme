@@ -32,9 +32,12 @@ bs '(define (factorial n)
 bs-eval '(factorial 10)'
 
 bs '(define (fib n)
-              (if (< n 2) n
+      (if (< n 2) n
                   (+ (fib (- n 1)) (fib (- n 2)))))'
-bs-eval '(fib 20)'
+# Branching recursion grows exponentially in an interpreter written in shell;
+# ten is large enough to demonstrate it without turning a smoke test into a
+# benchmark.
+bs-eval '(fib 10)'
 
 # ─────────────────────────────────────────────────────────────────────────────
 banner "Higher-order functions"

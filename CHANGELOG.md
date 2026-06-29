@@ -6,9 +6,34 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 > **Note**: The Emacs-like editor (`em.scm` / `em.scm.sh`) that was originally
 > developed as part of sheme has been spun out to its own project:
 > [shemacs](https://github.com/jordanhubbard/shemacs).
-> sheme is now a pure Scheme interpreter for shell programmers.
+> sheme now owns the Scheme interpreters and AOT compiler for shell programmers.
 
 ## [Unreleased]
+
+### Changed
+- make the AOT compiler application-neutral through injectable runtime files
+  and use portable code generation for Bash and zsh
+- run maintained examples and compiler regressions from the standard Make
+  targets, and document both shells as first-class supported runtimes
+- run the full gate and maintained demos on both Ubuntu and macOS in CI
+- make release retries idempotent and run tests before changelog mutation
+
+### Added
+- a zsh feature demo and focused two-target AOT compiler test suite
+- composite `c[ad]r` accessors through four levels in both interpreters
+
+### Fixed
+- return nonzero on tokenizer, parser, and evaluator failures without emitting
+  partial compiled output
+- preserve structured success values from `eval-string`
+- protect zsh interpreter state with a random owner-only temporary file and
+  remove it when the shell exits
+- preserve whitespace in compiled display and output primitives
+- isolate generated zsh bindings from typed special parameters such as `path`,
+  which is tied to the host shell's `PATH`
+- repair the algorithms, channels, and persisted todo examples
+- make the todo daemon wait on its watcher/timer children instead of
+  busy-looping on `/dev/null`, validate task IDs, and report write failures
 
 ## [1.1.0] - 2026-04-12
 
@@ -27,19 +52,6 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - AOT compiler bugs for correct shemacs compilation
 - release script awk multiline entry handling
 - terminal-size unbound LINES/COLUMNS under set -u
-
-
-## [1.0.8] - 2026-04-11
-
-### Added
-- add include guards to prevent redundant re-sourcing
-- add I/O extension layer to zsh interpreter
-
-### Fixed
-- make install/uninstall idempotent with safe portable sourcing
-- AOT compiler bugs for correct shemacs compilation
-- release script awk multiline entry handling
-
 
 ## [1.0.7] - 2026-03-01
 
@@ -71,21 +83,6 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Move editor to shemacs; replace examples with Scheme programs
 - Add new builtins for shemacs em.scm; spin off editor to shemacs; clean up docs
 - Update README to reflect choice of 'sheme'
-
-
-## [1.0.2] - 2026-03-01
-
-### Fixed
-- correct bash regex patterns in changelog categorizer
-
-### Other
-- Rename bad-scheme → sheme, bad-emacs → shemacs
-- Address @forthrin's remaining feedback on shemacs issue #5
-- Fix dsusp conflict in terminal-raw! (shemacs issue #2)
-- Move editor to shemacs; replace examples with Scheme programs
-- Add new builtins for shemacs em.scm; spin off editor to shemacs; clean up docs
-- Update README to reflect choice of 'sheme'
-
 
 ## [1.0.1] - 2026-02-28
 

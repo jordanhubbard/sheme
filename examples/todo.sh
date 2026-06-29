@@ -10,14 +10,12 @@
 # The daemon is a separate process (run with `daemon &`).  It does NOT poll on
 # a fixed timer.  Instead it uses an event-driven wait:
 #
-#   1. A background subshell runs inotifywait (Linux) or fswatch (macOS),
-#      watching $TODO_FILE.  When the file changes it sends SIGUSR1 to the
-#      daemon PID and exits.
+#   1. A background inotifywait (Linux) or fswatch (macOS) process watches
+#      $TODO_FILE while a separate sleep process represents the due-time timer.
 #
-#   2. The daemon main loop blocks on `read -r -t $timeout < /dev/null`.
-#      bash's `read` is interrupted by any signal that has a non-ignored
-#      handler.  USR1's handler is `trap ':' USR1` — the null command —
-#      which satisfies that requirement while doing nothing else.
+#   2. The daemon main loop blocks in Bash 4.3+'s `wait -n` until the watcher,
+#      timer, or a signal completes. USR1's handler is `trap ':' USR1` — the
+#      null command — so changes made by another todo process interrupt wait.
 #
 #   3. Every command that modifies the task list (add/done/del/edit) calls
 #      notify_daemon(), which sends SIGUSR1 directly to the daemon PID.
@@ -53,8 +51,9 @@
 #
 # Storage: ~/.local/share/sheme/todo.scm  (or $SHEME_TODO_FILE)
 #
-# Input restriction: task strings must not contain " \ $ or backtick — these
-# are stripped at input time so strings survive Scheme source serialization.
+# Input restriction: task strings must not contain double quotes, backslashes,
+# or apostrophes. They are stripped so Scheme serialization remains valid and
+# notification commands cannot escape their shell-quoted title/message fields.
 
 set -euo pipefail
 
@@ -67,6 +66,19 @@ TODO_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/sheme"
 TODO_FILE="${SHEME_TODO_FILE:-$TODO_DIR/todo.scm}"
 PID_FILE="$TODO_DIR/daemon.pid"
 mkdir -p "$TODO_DIR"
+
+# Quote a shell string as one Scheme string literal. Paths are not subject to
+# the interactive task-field restrictions and may legitimately contain either
+# kind of slash or a double quote.
+scheme_quote() {
+    local value="$1"
+    value="${value//\\/\\\\}"
+    value="${value//\"/\\\"}"
+    value="${value//$'\n'/\\n}"
+    value="${value//$'\t'/\\t}"
+    printf '"%s"' "$value"
+}
+TODO_FILE_SCHEME=$(scheme_quote "$TODO_FILE")
 
 # ── Terminal colours ──────────────────────────────────────────────────────────
 if [[ -t 1 ]]; then
@@ -84,7 +96,7 @@ die()    { printf "  ${RED}✗${RESET}  %s\n" "$1" >&2; exit 1; }
 # ── Scheme definitions ────────────────────────────────────────────────────────
 # Evaluated once at startup; definitions persist in __bs_env for this process.
 
-bs '
+IFS= read -r -d '' TODO_SCHEME_SOURCE <<'SCHEME' || true
 ;; ── Task structure ─────────────────────────────────────────────────────────
 ;; A task is a plain list: (id  title  human-msg  shell-cmd  due-epoch  done?)
 ;;   id         integer, unique and stable
@@ -106,8 +118,8 @@ bs '
 
 ;; ── Serialization ───────────────────────────────────────────────────────────
 ;; Each task serializes to a Scheme list literal so the file can be reloaded
-;; with (eval-string (file-read path)).  Strings must not contain " (stripped
-;; at input time by sanitize()).
+;; with (eval-string (file-read path)). Quotes and backslashes are stripped at
+;; input time by sanitize(), so each serialized field remains one string.
 
 (define (task->sexp t)
   (string-append
@@ -185,13 +197,18 @@ bs '
        (shell-exec (string-append "osascript -e 'display notification \""
                                   (task-human t) "\" with title \""
                                   (task-title t) "\"'") "")))))
-'
+SCHEME
+bs "$TODO_SCHEME_SOURCE"
+unset TODO_SCHEME_SOURCE
 
 # ── Persistence helpers ───────────────────────────────────────────────────────
 
 load_tasks() {
     if [[ -f "$TODO_FILE" ]]; then
-        bs "(define *tasks* (eval-string (file-read \"$TODO_FILE\")))"
+        bs "(define _load-result (eval-string (file-read $TODO_FILE_SCHEME)))
+            (if (car _load-result)
+                (define *tasks* (cdr _load-result))
+                (error \"Cannot load task store\" (cdr _load-result)))"
     else
         bs '(define *tasks* (list))'
     fi
@@ -199,7 +216,8 @@ load_tasks() {
 
 # Plain save — used internally by the daemon (no notification back to itself).
 save_tasks() {
-    bs "(file-write-atomic \"$TODO_FILE\" (tasks->file-str *tasks*))"
+    bs "(file-write-atomic $TODO_FILE_SCHEME (tasks->file-str *tasks*))"
+    [[ "$__bs_last" == "b:#t" ]] || die "Cannot write task store: $TODO_FILE"
 }
 
 # Save and wake the daemon — used by all interactive commands.
@@ -221,7 +239,23 @@ notify_daemon() {
     fi
 }
 
-sanitize() { printf '%s' "$1" | tr -d '"\\$`'; }
+sanitize() {
+    local value="$1"
+    value="${value//\\/}"
+    value="${value//\"/}"
+    value="${value//\'/}"
+    printf '%s' "$value"
+}
+
+validate_id() {
+    [[ "$1" =~ ^[1-9][0-9]*$ ]] || die "Task id must be a positive integer."
+}
+
+require_task() {
+    local id="$1"
+    bs "(length (filter (lambda (t) (= (task-id t) $id)) *tasks*))"
+    [[ "$__bs_last_display" != "0" ]] || die "No task with id $id."
+}
 
 parse_due() {
     local spec="$1"
@@ -298,7 +332,9 @@ cmd_list() {
 
 cmd_done() {
     local id="${1:-}"; [[ -n "$id" ]] || die "Usage: todo done <id>"
+    validate_id "$id"
     load_tasks
+    require_task "$id"
     bs "(define *tasks*
           (map (lambda (t)
                  (if (= (task-id t) $id)
@@ -312,7 +348,9 @@ cmd_done() {
 
 cmd_delete() {
     local id="${1:-}"; [[ -n "$id" ]] || die "Usage: todo del <id>"
+    validate_id "$id"
     load_tasks
+    require_task "$id"
     bs "(define *tasks* (filter (lambda (t) (not (= (task-id t) $id))) *tasks*))"
     save_and_notify
     ok "Task $id deleted."
@@ -320,6 +358,7 @@ cmd_delete() {
 
 cmd_edit() {
     local id="${1:-}"; [[ -n "$id" ]] || die "Usage: todo edit <id>"
+    validate_id "$id"
     load_tasks
 
     # define outside let so _edit_t is visible to subsequent bs calls
@@ -369,50 +408,52 @@ cmd_fire() {
                      *tasks*))
 (if (null? _due)
     (write-stdout \"  No pending tasks are currently due.\\n\")
-    (for-each fire-task _due))
+    (for-each
+      (lambda (t)
+        (fire-task t)
+        (set! *tasks*
+              (replace-task *tasks* (task-id t)
+                (make-task (task-id t) (task-title t) (task-human t)
+                           (task-shell t) (task-due t) #t))))
+      _due))
 (length _due)"
     local fired="${__bs_last_display}"
-    [[ "$fired" != "0" ]] && ok "$fired task(s) fired."
+    if [[ "$fired" != "0" ]]; then
+        save_and_notify
+        ok "$fired task(s) fired and marked done."
+    fi
 }
 
 # ── Event-driven wait ─────────────────────────────────────────────────────────
-# Blocks until one of: file changes, SIGUSR1 arrives, or timeout expires.
-# USR1 is handled by `trap ':' USR1` (set in cmd_daemon), which makes it a
-# real signal delivery that interrupts `read -t` without doing anything else.
-#
-# inotifywait / fswatch runs in a background subshell.  When the watched file
-# changes, the subshell sends SIGUSR1 to $daemon_pid and exits.  We then kill
-# the subshell (in case it is still running) and clean up.
-#
-# Note: killing the bash subshell may briefly orphan the inotifywait/fswatch
-# child.  It exits naturally when the file next changes or is replaced, which
-# for a TODO manager is entirely harmless.
+# Blocks until one of: file changes, SIGUSR1 arrives, or timeout expires. The
+# watcher and timer are direct children, so cleanup cannot orphan a process
+# that later signals a reused PID.
 _wait_for_event() {
-    local timeout="$1" daemon_pid="$2" watch_tool="$3"
-    local watcher_pid=0
+    local timeout="$1" watch_tool="$2"
+    local watcher_pid=0 timer_pid
 
     case "$watch_tool" in
         inotifywait)
-            # $daemon_pid captured before the subshell so there is no ambiguity
-            (inotifywait -q -e close_write "$TODO_FILE" 2>/dev/null
-             kill -USR1 "$daemon_pid" 2>/dev/null) &
+            inotifywait -q -e close_write "$TODO_FILE" >/dev/null 2>&1 &
             watcher_pid=$!
             ;;
         fswatch)
-            (fswatch -1 "$TODO_FILE" &>/dev/null
-             kill -USR1 "$daemon_pid" 2>/dev/null) &
+            fswatch -1 "$TODO_FILE" >/dev/null 2>&1 &
             watcher_pid=$!
             ;;
-        # poll: no watcher; read -t below acts as the timed sleep
+        # poll: no watcher; the timer is the only child
     esac
 
-    # Block here.  Woken by: USR1 (watcher or notify_daemon), timeout, SIGTERM.
-    read -r -t "$timeout" < /dev/null 2>/dev/null || true
+    sleep "$timeout" &
+    timer_pid=$!
+    wait -n 2>/dev/null || true
 
     if (( watcher_pid > 0 )); then
         kill "$watcher_pid" 2>/dev/null || true
         wait "$watcher_pid" 2>/dev/null || true
     fi
+    kill "$timer_pid" 2>/dev/null || true
+    wait "$timer_pid" 2>/dev/null || true
 }
 
 cmd_daemon() {
@@ -489,7 +530,7 @@ cmd_daemon() {
             || printf " — none due"
         printf "${RESET}\n"
 
-        _wait_for_event "$timeout" "$daemon_pid" "$watch_tool"
+        _wait_for_event "$timeout" "$watch_tool"
     done
 }
 

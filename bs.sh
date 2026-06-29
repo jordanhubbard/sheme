@@ -6,6 +6,8 @@
 #   bs         <src>   - evaluate Scheme source inline (no subshell overhead)
 #   bs-reset           - wipe interpreter state between sessions
 #   bs-eval    <src>   - convenience: evaluate and print human-readable result
+#   bs-compile <src>   - emit native Bash functions
+#   bs-compile-zsh <src> - emit native zsh functions (compiler runs in Bash)
 
 [[ -n "${_SHEME_LOADED:-}" ]] && return 0 2>/dev/null
 _SHEME_LOADED=1
@@ -86,7 +88,8 @@ __bs_is_builtin() {
         not) return 0 ;;
         'number?'|'string?'|'symbol?'|'boolean?'|'procedure?'|'pair?'|'null?'|'list?') return 0 ;;
         'zero?'|'positive?'|'negative?'|'even?'|'odd?') return 0 ;;
-        cons|car|cdr|'set-car!'|'set-cdr!'|list|length|append|reverse) return 0 ;;
+        cons|car|cdr|c[ad][ad]r|c[ad][ad][ad]r|c[ad][ad][ad][ad]r|\
+        'set-car!'|'set-cdr!'|list|length|append|reverse) return 0 ;;
         'list-tail'|'list-ref'|map|'for-each'|filter|assoc|assv|assq|member|memv|memq) return 0 ;;
         'string-length'|'string-append'|substring|'string->number'|'number->string') return 0 ;;
         'string->symbol'|'symbol->string'|'string=?'|'string<?'|'string>?') return 0 ;;
@@ -122,7 +125,7 @@ __bs_valid_bash_id() {
 __bs_tokenize() {
     local src="$1"
     __bs_tokens=()
-    local i=0 len=${#src} c tok
+    local i=0 len=${#src} c tok closed
 
     while (( i < len )); do
         c="${src:$i:1}"
@@ -168,11 +171,12 @@ __bs_tokenize() {
         # String literals
         if [[ "$c" == '"' ]]; then
             tok='"'
+            closed=0
             (( i++ ))
             while (( i < len )); do
                 c="${src:$i:1}"
                 if [[ "$c" == '"' ]]; then
-                    tok+='"'; (( i++ )); break
+                    tok+='"'; (( i++ )); closed=1; break
                 elif [[ "$c" == $'\\' ]]; then
                     tok+="${c}${src:$((i+1)):1}"
                     (( i += 2 ))
@@ -180,6 +184,10 @@ __bs_tokenize() {
                     tok+="$c"; (( i++ ))
                 fi
             done
+            if (( ! closed )); then
+                __bs_error "parse: unterminated string"
+                return 1
+            fi
             __bs_tokens+=("$tok")
             continue
         fi
@@ -195,6 +203,7 @@ __bs_tokenize() {
         done
         [[ -n "$tok" ]] && __bs_tokens+=("$tok")
     done
+    return 0
 }
 
 # ── Parser ────────────────────────────────────────────────────────────
@@ -244,6 +253,10 @@ __bs_parse_expr() {
             __bs_cons "y:unquote-splicing" "$args"
             return 0
             ;;
+        ')')
+            __bs_error "parse: unexpected ')'"
+            return 1
+            ;;
         *)
             __bs_parse_atom "$tok"
             return 0
@@ -253,8 +266,8 @@ __bs_parse_expr() {
 
 __bs_parse_list() {
     if (( __bs_tpos >= ${#__bs_tokens[@]} )); then
-        __bs_ret="n:()"
-        return 0
+        __bs_error "parse: unexpected end of list"
+        return 1
     fi
 
     local tok="${__bs_tokens[$__bs_tpos]}"
@@ -270,7 +283,12 @@ __bs_parse_list() {
         (( __bs_tpos++ ))
         __bs_parse_expr || return 1
         local cdr_val="$__bs_ret"
-        (( __bs_tpos++ ))     # consume closing ')'
+        if (( __bs_tpos >= ${#__bs_tokens[@]} )) || \
+           [[ "${__bs_tokens[$__bs_tpos]}" != ')' ]]; then
+            __bs_error "parse: dotted pair missing closing ')'"
+            return 1
+        fi
+        (( __bs_tpos++ ))
         __bs_ret="$cdr_val"
         return 0
     fi
@@ -1046,6 +1064,25 @@ __bs_apply() {                        # proc [args...]
         'f:cdr')
             [[ "${args[0]:0:2}" != 'p:' ]] && { __bs_error "cdr: not a pair: ${args[0]}"; return 1; }
             __bs_ret="${__bs_cdr[${args[0]}]}" ;;
+        'f:'c[ad][ad]r|'f:'c[ad][ad][ad]r|'f:'c[ad][ad][ad][ad]r)
+            # R5RS composite accessors apply their a/d operations right-to-left:
+            # cadr is (car (cdr value)), caddr is (car (cdr (cdr value))), etc.
+            local _ops="${proc#f:c}"
+            _ops="${_ops%r}"
+            local _value="${args[0]}" _op
+            for (( _k=${#_ops}-1; _k>=0; _k-- )); do
+                [[ "${_value:0:2}" != 'p:' ]] && {
+                    __bs_error "${proc#f:}: not a pair: $_value"
+                    return 1
+                }
+                _op="${_ops:$_k:1}"
+                if [[ "$_op" == a ]]; then
+                    _value="${__bs_car[$_value]}"
+                else
+                    _value="${__bs_cdr[$_value]}"
+                fi
+            done
+            __bs_ret="$_value" ;;
         'f:set-car!')
             __bs_car["${args[0]}"]="${args[1]}"; __bs_ret="n:()" ;;
         'f:set-cdr!')
@@ -1230,7 +1267,7 @@ __bs_apply() {                        # proc [args...]
             IFS= read -r __bs_tmp_readline
             __bs_ret="s:${__bs_tmp_readline}" ;;
 
-        # ── Terminal I/O (bash-only) ─────────────────────────────────
+        # ── Terminal I/O extensions (Bash implementation) ────────────
         'f:read-byte')
             local _ch
             IFS= read -ru${_BS_IN_FD:-0} -n1 -d '' _ch
@@ -1317,11 +1354,11 @@ __bs_apply() {                        # proc [args...]
             local -a _saved_tokens=("${__bs_tokens[@]}")
             local _saved_tpos="$__bs_tpos"
             __bs_last_error=""
-            __bs_tokenize "$_src"
+            local _eval_ok=1
+            __bs_tokenize "$_src" || _eval_ok=0
             __bs_tpos=0
             __bs_ret="n:()"
-            local _eval_ok=1
-            while (( __bs_tpos < ${#__bs_tokens[@]} )); do
+            while (( _eval_ok && __bs_tpos < ${#__bs_tokens[@]} )); do
                 if ! __bs_parse_expr; then _eval_ok=0; break; fi
                 if ! __bs_eval "$__bs_ret" "0"; then _eval_ok=0; break; fi
             done
@@ -1329,9 +1366,9 @@ __bs_apply() {                        # proc [args...]
             __bs_tokens=("${_saved_tokens[@]}")
             __bs_tpos="$_saved_tpos"
             if (( _eval_ok )); then
-                __bs_display "$_result_val"
-                local _disp="$__bs_ret"
-                __bs_cons "b:#t" "s:$_disp"
+                # Preserve the evaluated value, including pairs and vectors.
+                # Callers that need text can display the cdr themselves.
+                __bs_cons "b:#t" "$_result_val"
             else
                 local _err="${__bs_last_error:-unknown error}"
                 __bs_cons "b:#f" "s:$_err"
@@ -1540,21 +1577,30 @@ declare -g __bs_tpos=0
 # $__bs_last (tagged) and $__bs_last_display (human-readable).
 # ──────────────────────────────────────────────────────────────────────────────
 bs() {
-    local _src="$1" _bs_old_opts=""
+    local _src="$1" _bs_old_opts="" _bs_status=0
     # Save and disable errexit — arithmetic (( )) returning 0 is exit code 1
     [[ $- == *e* ]] && _bs_old_opts="e" && set +e
-    __bs_tokenize "$_src"
+    __bs_last_error=""
+    if ! __bs_tokenize "$_src"; then
+        _bs_status=1
+    fi
     __bs_tpos=0
     __bs_ret="n:()"
-    while (( __bs_tpos < ${#__bs_tokens[@]} )); do
-        __bs_parse_expr || break
-        __bs_eval "$__bs_ret" "0" || true
+    while (( _bs_status == 0 && __bs_tpos < ${#__bs_tokens[@]} )); do
+        if ! __bs_parse_expr; then
+            _bs_status=1
+            break
+        fi
+        if ! __bs_eval "$__bs_ret" "0"; then
+            _bs_status=1
+            break
+        fi
     done
     __bs_last="$__bs_ret"
     __bs_display "$__bs_last"
     __bs_last_display="$__bs_ret"
     [[ -n "$_bs_old_opts" ]] && set -e
-    return 0
+    return "$_bs_status"
 }
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1575,16 +1621,24 @@ bs-reset() {
 # bs-eval: convenience wrapper - evaluate and print human-readable result
 # ──────────────────────────────────────────────────────────────────────────────
 bs-eval() {
-    bs "$1"
-    printf '%s\n' "$__bs_last_display"
+    if bs "$1"; then
+        printf '%s\n' "$__bs_last_display"
+        return 0
+    fi
+    return 1
 }
 
 # ══════════════════════════════════════════════════════════════════════════════
 # AOT Compiler: Scheme → Bash
 # ══════════════════════════════════════════════════════════════════════════════
 #
-# bs-compile <source> — transpile Scheme source to native bash code.
-# Output is a self-contained bash script (functions + global variable decls).
+# bs-compile [options] <source> — transpile Scheme source to native bash code.
+# Output contains native functions and global declarations. Programs that use
+# eval-string must also load the matching interpreter at runtime.
+# Options:
+#   --runtime FILE              inject a portable application runtime; shell
+#                               functions in it replace same-named Scheme defs
+#   --replace-functions "..."  omit additional Scheme definitions explicitly
 #
 # Design:
 #   - Unboxed values: ints are bash ints, strings are bash strings, bools 0/1
@@ -1592,6 +1646,8 @@ bs-eval() {
 #   - Name mangling: hyphen→_, ?→_p, !→_x, >→_to_, *→_star_
 #   - Vectors: bash indexed arrays
 #   - Lists: bash arrays (cons=prepend, car=[0], null?=length check)
+# Application-specific representations belong in an injected runtime rather
+# than this compiler. shemacs uses that interface for nested editor state.
 
 # ── Name mangling ────────────────────────────────────────────────────────────
 __bsc_mangle() {
@@ -1617,12 +1673,12 @@ __bsc_mangle() {
             *) r+='_' ;;
         esac
     done
-    # Rename variables that clash with zsh special read-only names
-    if [[ "$__bsc_target" == "zsh" ]]; then
-        case "$r" in
-            status|pipestatus|funcstack|funcfiletrace|funcsourcetrace|\
-            LINENO|FUNCNAME|BASH_SOURCE) r="__sc_${r}" ;;
-        esac
+    # Scheme bindings must not alias zsh's typed/special parameters. Even a
+    # writable one can have process-wide side effects: a local named `path`,
+    # for example, is tied to PATH and can make external commands disappear.
+    if [[ "$__bsc_target" == "zsh" && \
+          -n "${__bsc_zsh_reserved[$r]:-}" ]]; then
+        r="__sc_${r}"
     fi
     __bsc_ret="$r"
 }
@@ -1636,6 +1692,31 @@ declare -gA __bsc_funcs=()       # set of function names (mangled)
 declare -gA __bsc_int_vars=()    # variables known to be integer-typed
 declare -gA __bsc_pair_vars=()   # variables known to be 2-element pairs
 declare -gA __bsc_arr_vars=()    # variables known to be arrays (vectors/lists)
+declare -gA __bsc_zsh_reserved=(
+    [ARGC]=1 [CDPATH]=1 [COLUMNS]=1 [EGID]=1 [EUID]=1 [FIGNORE]=1
+    [FPATH]=1 [FUNCNEST]=1 [GID]=1 [HISTCHARS]=1 [HISTCMD]=1 [HISTSIZE]=1
+    [HOME]=1 [IFS]=1 [KEYBOARD_HACK]=1 [LANG]=1 [LC_ALL]=1 [LC_CTYPE]=1
+    [LINENO]=1 [LINES]=1 [MAILPATH]=1 [MANPATH]=1 [MODULE_PATH]=1
+    [NULLCMD]=1 [OPTARG]=1 [OPTIND]=1 [PATH]=1 [PPID]=1 [PROMPT]=1
+    [PROMPT2]=1 [PROMPT3]=1 [PROMPT4]=1 [PS1]=1 [PS2]=1 [PS3]=1 [PS4]=1
+    [PSVAR]=1 [RANDOM]=1 [READNULLCMD]=1 [SAVEHIST]=1 [SECONDS]=1 [SHLVL]=1
+    [SPROMPT]=1 [TERM]=1 [TRY_BLOCK_ERROR]=1 [TRY_BLOCK_INTERRUPT]=1
+    [TTYIDLE]=1 [UID]=1 [USERNAME]=1 [WATCH]=1 [WORDCHARS]=1
+    [ZSH_EVAL_CONTEXT]=1 [ZSH_SUBSHELL]=1 [_]=1
+    [aliases]=1 [argv]=1 [builtins]=1 [cdpath]=1 [commands]=1 [dirstack]=1
+    [dis_aliases]=1 [dis_builtins]=1 [dis_functions]=1
+    [dis_functions_source]=1 [dis_galiases]=1 [dis_patchars]=1
+    [dis_reswords]=1 [dis_saliases]=1 [fignore]=1 [fpath]=1
+    [funcfiletrace]=1 [funcsourcetrace]=1 [funcstack]=1 [functions]=1
+    [functions_source]=1 [functrace]=1 [galiases]=1 [histchars]=1
+    [history]=1 [historywords]=1 [jobdirs]=1 [jobstates]=1 [jobtexts]=1
+    [keymaps]=1 [mailpath]=1 [manpath]=1 [module_path]=1 [modules]=1
+    [nameddirs]=1 [options]=1 [parameters]=1 [patchars]=1 [path]=1
+    [pipestatus]=1 [prompt]=1 [psvar]=1 [reswords]=1 [saliases]=1
+    [status]=1 [termcap]=1 [terminfo]=1 [userdirs]=1 [usergroups]=1
+    [watch]=1 [widgets]=1 [zsh_eval_context]=1 [zsh_scheduled_events]=1
+    [FUNCNAME]=1 [BASH_SOURCE]=1
+)
 declare -g  __bsc_in_func=0      # 1 when inside a function definition
 declare -g __bsc_list_n=0        # counter for temp list variables
 declare -g __bsc_target="bash"   # output target: "bash" or "zsh"
@@ -2251,6 +2332,17 @@ __bsc_unquote() {
         printf '%s' "${v:1:${#v}-2}"
     else
         printf '%s' "$v"
+    fi
+}
+
+# Return one generated-shell word, adding double quotes around expansions and
+# unquoted scalars while preserving literals that already carry shell quotes.
+__bsc_quote_word() {
+    local v="$1"
+    if [[ "$v" == '"'*'"' || "$v" == "\$'"*"'" || "$v" == "'"*"'" ]]; then
+        printf '%s' "$v"
+    else
+        printf '"%s"' "$v"
     fi
 }
 
@@ -3339,7 +3431,8 @@ __bsc_emit_apply() {
 __bsc_emit_error() {
     local rest="$1"
     __bsc_emit_expr "${__bs_car[$rest]}" "expr"
-    __bsc_line "printf 'error: %s\\n' $__bsc_ret >&2"
+    local value="$(__bsc_quote_word "$__bsc_ret")"
+    __bsc_line "printf 'error: %s\\n' $value >&2"
     __bsc_line "return 1"
     __bsc_ret=""
 }
@@ -3596,7 +3689,7 @@ __bsc_emit_string_op() {
             if [[ "$v" == '$'[a-zA-Z_]* && "$v" != *'['* && "$v" != *'{'* && "$v" != *':'* ]]; then
                 __bsc_ret="\${#${v:1}}"
             elif [[ "$v" == '"${'*'}"' ]]; then
-                # Complex expansion like "${em_lines[em_cy]:-}" — use temp var
+                # Complex array expansion with a dynamic index — use a temp var.
                 __bsc_local "__sl=$v"
                 __bsc_ret="\${#__sl}"
             else
@@ -3613,7 +3706,9 @@ __bsc_emit_string_op() {
             local start="$__bsc_ret"
             __bsc_emit_arith_val "${__bs_car[${__bs_cdr[${__bs_cdr[$rest]}]}]}"
             local end="$__bsc_ret"
-            __bsc_ret="\"\${${s}:${start}:\$(( ${end} - ${start} ))}\""
+            # Explicit arithmetic expansions are portable across Bash and zsh.
+            # Bare offsets (for example ${line:i:1}) are parsed as modifiers by zsh.
+            __bsc_ret="\"\${${s}:\$(( ${start} )):\$(( (${end}) - (${start}) ))}\""
             return 0 ;;
 
         'string-ref')
@@ -3622,7 +3717,7 @@ __bsc_emit_string_op() {
             s="$(__bsc_strip_dollar "$s")"
             __bsc_emit_arith_val "${__bs_car[${__bs_cdr[$rest]}]}"
             local idx="$__bsc_ret"
-            __bsc_ret="\"\${${s}:${idx}:1}\""
+            __bsc_ret="\"\${${s}:\$(( ${idx} )):1}\""
             return 0 ;;
 
         'string')
@@ -3887,7 +3982,7 @@ __bsc_emit_vector_op() {
             local _lkw="local"
             (( __bsc_in_func )) || _lkw="declare"
             __bsc_line "$_lkw -i __vi_idx=\$(( $idx ))"
-            __bsc_line "$_lkw -a ${tmp}=(\"\${${vec}[@]:0:__vi_idx}\" $val \"\${${vec}[@]:__vi_idx}\")"
+            __bsc_line "$_lkw -a ${tmp}=(\"\${${vec}[@]:0:\$__vi_idx}\" $val \"\${${vec}[@]:\$__vi_idx}\")"
             __bsc_ret="(\"\${${tmp}[@]}\")"
             return 0 ;;
 
@@ -3902,7 +3997,7 @@ __bsc_emit_vector_op() {
             local _lkw="local"
             (( __bsc_in_func )) || _lkw="declare"
             __bsc_line "$_lkw -i __vr_idx=\$(( $idx ))"
-            __bsc_line "$_lkw -a ${tmp}=(\"\${${vec}[@]:0:__vr_idx}\" \"\${${vec}[@]:__vr_idx+1}\")"
+            __bsc_line "$_lkw -a ${tmp}=(\"\${${vec}[@]:0:\$__vr_idx}\" \"\${${vec}[@]:\$(( __vr_idx + 1 ))}\")"
             __bsc_ret="(\"\${${tmp}[@]}\")"
             return 0 ;;
     esac
@@ -4052,7 +4147,7 @@ __bsc_emit_list_op() {
             __bsc_ensure_arr_var; local lst="$__bsc_arr_name"
             __bsc_emit_arith_val "${__bs_car[${__bs_cdr[$rest]}]}"
             local idx="$__bsc_ret"
-            __bsc_ret="(\"\${${lst}[@]:${idx}}\")"
+            __bsc_ret="(\"\${${lst}[@]:\$(( ${idx} ))}\")"
             return 0 ;;
     esac
 
@@ -4162,12 +4257,14 @@ __bsc_emit_io() {
     case "$op" in
         'display')
             __bsc_emit_expr "${__bs_car[$rest]}" "expr"
-            __bsc_line "printf '%s' $__bsc_ret >&2"
+            local value="$(__bsc_quote_word "$__bsc_ret")"
+            __bsc_line "printf '%s' $value >&2"
             __bsc_ret=""
             return 0 ;;
         'write')
             __bsc_emit_expr "${__bs_car[$rest]}" "expr"
-            __bsc_line "printf '%s' $__bsc_ret >&2"
+            local value="$(__bsc_quote_word "$__bsc_ret")"
+            __bsc_line "printf '%s' $value >&2"
             __bsc_ret=""
             return 0 ;;
         'newline')
@@ -4176,10 +4273,11 @@ __bsc_emit_io() {
             return 0 ;;
         'write-stdout')
             __bsc_emit_expr "${__bs_car[$rest]}" "expr"
+            local value="$(__bsc_quote_word "$__bsc_ret")"
             if [[ "$__bsc_target" == "zsh" ]]; then
-                __bsc_line "printf '%s' $__bsc_ret >&\${_BS_OUT_FD:-1}"
+                __bsc_line "printf '%s' $value >&\${_BS_OUT_FD:-1}"
             else
-                __bsc_line "printf '%s' $__bsc_ret"
+                __bsc_line "printf '%s' $value"
             fi
             __bsc_ret=""
             return 0 ;;
@@ -4307,7 +4405,7 @@ __bsc_emit_file_op() {
     case "$op" in
         'file-read')
             __bsc_emit_expr "${__bs_car[$rest]}" "expr"
-            local path="$__bsc_ret"
+            local path="$(__bsc_quote_word "$__bsc_ret")"
             __bsc_line "if [[ -f $path ]]; then"
             __bsc_line "    __r=\$(cat $path 2>/dev/null) || __r=\"\""
             __bsc_line "else"
@@ -4317,19 +4415,20 @@ __bsc_emit_file_op() {
             return 0 ;;
         'file-write')
             __bsc_emit_expr "${__bs_car[$rest]}" "expr"
-            local path="$__bsc_ret"
+            local path="$(__bsc_quote_word "$__bsc_ret")"
             __bsc_emit_expr "${__bs_car[${__bs_cdr[$rest]}]}" "expr"
-            local content="$__bsc_ret"
-            __bsc_line "{ printf '%s\\n' \"$content\" > \"$path\"; } 2>/dev/null && __r=1 || __r=0"
+            local content="$(__bsc_quote_word "$__bsc_ret")"
+            __bsc_line "{ printf '%s\\n' $content > $path; } 2>/dev/null && __r=1 || __r=0"
             __bsc_ret="\$__r"
             return 0 ;;
         'file-write-atomic')
             __bsc_emit_expr "${__bs_car[$rest]}" "expr"
-            local path="$__bsc_ret"
+            local path="$(__bsc_quote_word "$__bsc_ret")"
             __bsc_emit_expr "${__bs_car[${__bs_cdr[$rest]}]}" "expr"
-            local content="$__bsc_ret"
-            __bsc_line "local __fwa_tmp=\"${path}.em\$\$\""
-            __bsc_line "if { printf '%s\\n' \"$content\" > \"\$__fwa_tmp\"; } 2>/dev/null && mv -f \"\$__fwa_tmp\" \"$path\" 2>/dev/null; then"
+            local content="$(__bsc_quote_word "$__bsc_ret")"
+            __bsc_line "local __fwa_path=$path"
+            __bsc_line 'local __fwa_tmp="${__fwa_path}.em$$"'
+            __bsc_line "if { printf '%s\\n' $content > \"\$__fwa_tmp\"; } 2>/dev/null && mv -f \"\$__fwa_tmp\" \"\$__fwa_path\" 2>/dev/null; then"
             __bsc_line "    __r=1"
             __bsc_line "else"
             __bsc_line "    rm -f \"\$__fwa_tmp\" 2>/dev/null; __r=0"
@@ -4349,7 +4448,8 @@ __bsc_emit_file_op() {
             return 0 ;;
         'file-directory?')
             __bsc_emit_expr "${__bs_car[$rest]}" "expr"
-            __bsc_ret="[[ -d $__bsc_ret ]]"
+            local path="$(__bsc_quote_word "$__bsc_ret")"
+            __bsc_ret="[[ -d $path ]]"
             return 0 ;;
     esac
 
@@ -4364,14 +4464,15 @@ __bsc_emit_shell_op() {
     case "$op" in
         'shell-capture')
             __bsc_emit_expr "${__bs_car[$rest]}" "expr"
-            __bsc_line "__r=\$(eval $__bsc_ret 2>/dev/null) || __r=\"0\""
+            local cmd="$(__bsc_quote_word "$__bsc_ret")"
+            __bsc_line "__r=\$(eval $cmd 2>/dev/null) || __r=\"0\""
             __bsc_ret="\$__r"
             return 0 ;;
         'shell-exec')
             __bsc_emit_expr "${__bs_car[$rest]}" "expr"
-            local cmd="$__bsc_ret"
+            local cmd="$(__bsc_quote_word "$__bsc_ret")"
             __bsc_emit_expr "${__bs_car[${__bs_cdr[$rest]}]}" "expr"
-            local input="$__bsc_ret"
+            local input="$(__bsc_quote_word "$__bsc_ret")"
             __bsc_line "printf '%s' $input | eval $cmd 2>/dev/null"
             __bsc_line "[[ \$? -eq 0 ]] && __r=1 || __r=0"
             __bsc_ret="\$__r"
@@ -4385,12 +4486,26 @@ __bsc_emit_shell_op() {
 __bsc_emit_eval_string() {
     local rest="$1" mode="$2"
     __bsc_emit_expr "${__bs_car[$rest]}" "expr"
-    # eval-string needs the interpreter; emit a call to bs() and return (ok? . display)
-    __bsc_line "if bs $__bsc_ret 2>/dev/null; then"
-    __bsc_line "    __r=(1 \"\$__bs_last_display\")"
-    __bsc_line "else"
-    __bsc_line "    __r=(0 \"\${__bs_last_error:-error}\")"
-    __bsc_line "fi"
+    local source_word="$(__bsc_quote_word "$__bsc_ret")"
+    # The AOT representation cannot import interpreter heap objects, so this
+    # boundary intentionally returns the display value. zsh's bs emits parent-
+    # shell assignments and must be eval'd; Bash's bs updates globals directly.
+    if [[ "$__bsc_target" == zsh ]]; then
+        __bsc_line "local __bs_eval_output"
+        __bsc_line "if __bs_eval_output=\"\$(bs $source_word 2>/dev/null)\"; then"
+        __bsc_line '    eval "$__bs_eval_output"'
+        __bsc_line '    __r=(1 "$__bs_last_display")'
+        __bsc_line "else"
+        __bsc_line '    eval "$__bs_eval_output" 2>/dev/null || true'
+        __bsc_line '    __r=(0 "${__bs_last_error:-error}")'
+        __bsc_line "fi"
+    else
+        __bsc_line "if bs $source_word 2>/dev/null; then"
+        __bsc_line '    __r=(1 "$__bs_last_display")'
+        __bsc_line "else"
+        __bsc_line '    __r=(0 "${__bs_last_error:-error}")'
+        __bsc_line "fi"
+    fi
     __bsc_ret='("${__r[@]}")'
     __bsc_is_pair=1
 }
@@ -4399,6 +4514,34 @@ __bsc_emit_eval_string() {
 # bs-compile: Public entry point
 # ══════════════════════════════════════════════════════════════════════════════
 bs-compile() {
+    local _runtime_file="" _replace_functions=""
+    while (( $# > 1 )); do
+        case "$1" in
+            --runtime)
+                [[ $# -ge 3 ]] || { printf 'bs-compile: --runtime requires a file\n' >&2; return 2; }
+                _runtime_file="$2"
+                shift 2 ;;
+            --replace-functions)
+                [[ $# -ge 3 ]] || { printf 'bs-compile: --replace-functions requires a list\n' >&2; return 2; }
+                _replace_functions="$2"
+                shift 2 ;;
+            --)
+                shift
+                break ;;
+            *)
+                break ;;
+        esac
+    done
+    [[ $# -eq 1 ]] || {
+        printf 'usage: bs-compile [--runtime file] [--replace-functions "name ..."] source\n' >&2
+        __bsc_target="bash"
+        return 2
+    }
+    if [[ -n "$_runtime_file" && ! -r "$_runtime_file" ]]; then
+        printf 'bs-compile: cannot read runtime file: %s\n' "$_runtime_file" >&2
+        __bsc_target="bash"
+        return 2
+    fi
     local _src="$1"
     local _bs_old_opts=""
     [[ $- == *e* ]] && _bs_old_opts="e" && set +e
@@ -4436,14 +4579,16 @@ bs-compile() {
     if [[ "$__bsc_target" == "zsh" ]]; then
         __bsc_line "# Runtime: byte-to-char lookup table (avoids fork per integer->char call)"
         __bsc_line "typeset -ga __bsc_b2c=()"
-        __bsc_line 'for (( __bsc_i=0; __bsc_i<=127; __bsc_i++ )); do'
+        __bsc_line '__bsc_b2c[0]=""  # shell strings cannot represent NUL'
+        __bsc_line 'for (( __bsc_i=1; __bsc_i<=127; __bsc_i++ )); do'
         __bsc_line '    __bsc_b2c[$__bsc_i]=$(printf "\\$(printf '"'"'%03o'"'"' "$__bsc_i")")'
         __bsc_line 'done'
         __bsc_line ""
     else
         __bsc_line "# Runtime: byte-to-char lookup table (avoids fork per integer->char call)"
         __bsc_line "declare -ga __bsc_b2c=()"
-        __bsc_line 'for (( __bsc_i=0; __bsc_i<=127; __bsc_i++ )); do'
+        __bsc_line '__bsc_b2c[0]=""  # shell strings cannot represent NUL'
+        __bsc_line 'for (( __bsc_i=1; __bsc_i<=127; __bsc_i++ )); do'
         __bsc_line '    __bsc_b2c[$__bsc_i]=$(printf "\\$(printf '"'"'%03o'"'"' "$__bsc_i")")'
         __bsc_line 'done'
         __bsc_line ""
@@ -4452,23 +4597,20 @@ bs-compile() {
     __bsc_funcs["string_repeat"]=1
     __bsc_funcs["vector_insert"]=1
     __bsc_funcs["vector_remove"]=1
-    __bsc_funcs["em_undo_push"]=1
-    __bsc_funcs["em_undo"]=1
-    __bsc_funcs["em_lines_list"]=1
-    __bsc_funcs["em_make_buffer"]=1
-    __bsc_funcs["em_find_buffer_by_id"]=1
-    __bsc_funcs["em_find_buffer_by_name"]=1
-    __bsc_funcs["em_find_buffer_by_filename"]=1
-    __bsc_funcs["em_save_buffer_state"]=1
-    __bsc_funcs["em_restore_buffer_state"]=1
-    __bsc_funcs["em_new_buffer"]=1
-    __bsc_funcs["em_buf_update_name"]=1
-    __bsc_funcs["em_do_switch_buffer"]=1
-    __bsc_funcs["em_do_kill_buffer"]=1
-    __bsc_funcs["em_list_buffers"]=1
-    __bsc_funcs["em_complete_buffer"]=1
-    __bsc_funcs["em_do_quit"]=1
-
+    local _replace_name
+    for _replace_name in $_replace_functions; do
+        __bsc_mangle "$_replace_name"
+        __bsc_funcs["$__bsc_ret"]=1
+    done
+    if [[ -n "$_runtime_file" ]]; then
+        local _runtime_decl
+        local _runtime_fn_re='^([a-zA-Z_][a-zA-Z0-9_]*)\(\)[[:space:]]*\{[[:space:]]*$'
+        while IFS= read -r _runtime_decl; do
+            if [[ "$_runtime_decl" =~ $_runtime_fn_re ]]; then
+                __bsc_funcs["${BASH_REMATCH[1]}"]=1
+            fi
+        done < "$_runtime_file"
+    fi
     __bsc_line "# Runtime helper: string-repeat"
     __bsc_line "string_repeat() {"
     __bsc_line "    local s=\"\$1\" n=\"\$2\" r=\"\""
@@ -4477,378 +4619,45 @@ bs-compile() {
     __bsc_line "}"
     __bsc_line ""
 
-    # Runtime helper: em_undo_push — packs record fields with US delimiter
-    # For replace_region, the last args (saved lines) are packed with RS sub-delimiter
-    __bsc_line "# Runtime helper: em_undo_push"
-    __bsc_line 'em_undo_push() {'
-    __bsc_line '    local US=$'"'"'\x1f'"'"' RS=$'"'"'\x1e'"'"''
-    __bsc_line '    local type="$1"'
-    __bsc_line '    if [[ "$type" == "replace_region" ]]; then'
-    __bsc_line '        local record="${1}${US}${2}${US}${3}${US}${4}${US}${5}"'
-    __bsc_line '        shift 5'
-    __bsc_line '        local packed=""'
-    __bsc_line '        for __ul in "$@"; do'
-    __bsc_line '            [[ -n "$packed" ]] && packed+="$RS"'
-    __bsc_line '            packed+="$__ul"'
-    __bsc_line '        done'
-    __bsc_line '        record+="${US}${packed}"'
-    __bsc_line '    else'
-    __bsc_line '        local record="$1"; shift'
-    __bsc_line '        for __ul in "$@"; do record+="${US}${__ul}"; done'
-    __bsc_line '    fi'
-    __bsc_line '    em_undo_stack=("$record" "${em_undo_stack[@]}")'
-    __bsc_line '    (( ${#em_undo_stack[@]} > 200 )) && em_undo_stack=("${em_undo_stack[@]:0:200}")'
-    __bsc_line '}'
-    __bsc_line ''
-
-    # Runtime helper: em_undo — unpacks record and applies undo operation
-    __bsc_line '# Runtime helper: em_undo'
-    __bsc_line 'em_undo() {'
-    __bsc_line '    local US=$'"'"'\x1f'"'"' RS=$'"'"'\x1e'"'"''
-    __bsc_line '    if (( ${#em_undo_stack[@]} == 0 )); then'
-    __bsc_line '        em_message="No further undo information"; return'
-    __bsc_line '    fi'
-    __bsc_line '    local __rec="${em_undo_stack[0]}"'
-    __bsc_line '    em_undo_stack=("${em_undo_stack[@]:1}")'
-    __bsc_line '    local -a __f=()'
-    __bsc_line '    while [[ "$__rec" == *"$US"* ]]; do'
-    __bsc_line '        __f+=("${__rec%%"$US"*}"); __rec="${__rec#*"$US"}"'
-    __bsc_line '    done'
-    __bsc_line '    __f+=("$__rec")'
-    __bsc_line '    local __type="${__f[0]}"'
-    __bsc_line '    case "$__type" in'
-    __bsc_line '        insert_char)'
-    __bsc_line '            local -i __y=${__f[1]} __x=${__f[2]}'
-    __bsc_line '            local __ch="${__f[3]}" __ln="${em_lines[__y]:-}"'
-    __bsc_line '            em_lines[__y]="${__ln:0:__x}${__ch}${__ln:__x}"'
-    __bsc_line '            em_cy=$__y; em_cx=$__x ;;'
-    __bsc_line '        delete_char)'
-    __bsc_line '            local -i __y=${__f[1]} __x=${__f[2]}'
-    __bsc_line '            local __ln="${em_lines[__y]:-}"'
-    __bsc_line '            em_lines[__y]="${__ln:0:__x}${__ln:__x+1}"'
-    __bsc_line '            em_cy=$__y; em_cx=$__x ;;'
-    __bsc_line '        join_lines)'
-    __bsc_line '            local -i __y=${__f[1]} __x=${__f[2]}'
-    __bsc_line '            local __ln="${em_lines[__y]:-}"'
-    __bsc_line '            em_lines[__y]="${__ln:0:__x}"'
-    __bsc_line '            local -i __idx=__y+1'
-    __bsc_line '            em_lines=("${em_lines[@]:0:__idx}" "${__ln:__x}" "${em_lines[@]:__idx}")'
-    __bsc_line '            (( em_nlines++ )) || true'
-    __bsc_line '            em_cy=$__y; em_cx=$__x ;;'
-    __bsc_line '        split_line)'
-    __bsc_line '            local -i __y=${__f[1]} __x=${__f[2]}'
-    __bsc_line '            local __ln="${em_lines[__y]:-}" __nx="${em_lines[__y+1]:-}"'
-    __bsc_line '            em_lines[__y]="${__ln}${__nx}"'
-    __bsc_line '            local -i __idx=__y+1'
-    __bsc_line '            em_lines=("${em_lines[@]:0:__idx}" "${em_lines[@]:__idx+1}")'
-    __bsc_line '            (( em_nlines-- )) || true'
-    __bsc_line '            em_cy=$__y; em_cx=$__x ;;'
-    __bsc_line '        replace_line)'
-    __bsc_line '            local -i __y=${__f[1]} __x=${__f[2]}'
-    __bsc_line '            em_lines[__y]="${__f[3]}"'
-    __bsc_line '            em_cy=$__y; em_cx=$__x ;;'
-    __bsc_line '        replace_region)'
-    __bsc_line '            local -i __sy=${__f[1]} __nc=${__f[2]} __scy=${__f[3]} __scx=${__f[4]}'
-    __bsc_line '            local __pk="${__f[5]}"'
-    __bsc_line '            local -a __sv=()'
-    __bsc_line '            while [[ "$__pk" == *"$RS"* ]]; do'
-    __bsc_line '                __sv+=("${__pk%%"$RS"*}"); __pk="${__pk#*"$RS"}"'
-    __bsc_line '            done'
-    __bsc_line '            __sv+=("$__pk")'
-    __bsc_line '            local -i __i'
-    __bsc_line '            for (( __i=0; __i<__nc && em_nlines>0; __i++ )); do'
-    __bsc_line '                em_lines=("${em_lines[@]:0:__sy}" "${em_lines[@]:__sy+1}")'
-    __bsc_line '                (( em_nlines-- )) || true'
-    __bsc_line '            done'
-    __bsc_line '            for (( __i=0; __i<${#__sv[@]}; __i++ )); do'
-    __bsc_line '                local -i __idx=__sy+__i'
-    __bsc_line '                em_lines=("${em_lines[@]:0:__idx}" "${__sv[__i]}" "${em_lines[@]:__idx}")'
-    __bsc_line '                (( em_nlines++ )) || true'
-    __bsc_line '            done'
-    __bsc_line '            (( em_nlines == 0 )) && { em_lines=(""); em_nlines=1; }'
-    __bsc_line '            em_cy=$__scy; em_cx=$__scx ;;'
-    __bsc_line '    esac'
-    __bsc_line '    em_modified=1'
-    __bsc_line '    em_ensure_visible'
-    __bsc_line '    em_message="Undo!"'
-    __bsc_line '}'
-    __bsc_line ''
-
-    # Runtime helper: em_lines_list — collect lines sy..ey into array
-    __bsc_line '# Runtime helper: em_lines_list'
-    __bsc_line 'em_lines_list() {'
-    __bsc_line '    local -i __sy=$1 __ey=$2'
-    __bsc_line '    __r=("${em_lines[@]:__sy:__ey-__sy+1}")'
-    __bsc_line '}'
-    __bsc_line ''
-
-    # ── Buffer system runtime helpers ────────────────────────────────────
-    # Uses an associative array em_bufs with keys like "${id}_field"
-    # em_buf_ids tracks known buffer IDs as a regular array
-    __bsc_line '# Buffer system: uses em_bufs associative array for nested state'
-    __bsc_line 'declare -gA em_bufs=()'
-    __bsc_line 'declare -ga em_buf_ids=()'
-    __bsc_line ''
-
-    __bsc_line 'em_make_buffer() {'
-    __bsc_line '    local -i id=$1; local name="$2" filename="$3"'
-    __bsc_line '    em_bufs["${id}_name"]="$name"'
-    __bsc_line '    em_bufs["${id}_filename"]="$filename"'
-    __bsc_line '    em_bufs["${id}_nlines"]=1'
-    __bsc_line '    em_bufs["${id}_line_0"]=""'
-    __bsc_line '    em_bufs["${id}_cy"]=0; em_bufs["${id}_cx"]=0'
-    __bsc_line '    em_bufs["${id}_top"]=0; em_bufs["${id}_left"]=0'
-    __bsc_line '    em_bufs["${id}_modified"]=0'
-    __bsc_line '    em_bufs["${id}_goal_col"]=-1'
-    __bsc_line '    em_bufs["${id}_mark_y"]=-1; em_bufs["${id}_mark_x"]=-1'
-    __bsc_line '    em_bufs["${id}_undo"]=""'
-    __bsc_line '    em_bufs["${id}_kill"]=""'
-    __bsc_line '    __r=$id'
-    __bsc_line '}'
-    __bsc_line ''
-
-    __bsc_line 'em_find_buffer_by_id() {'
-    __bsc_line '    local -i id=$1 bid'
-    __bsc_line '    for bid in "${em_buf_ids[@]}"; do'
-    __bsc_line '        if (( bid == id )); then __r=$bid; return 0; fi'
-    __bsc_line '    done'
-    __bsc_line '    __r=0; return 1'
-    __bsc_line '}'
-    __bsc_line ''
-
-    __bsc_line 'em_find_buffer_by_name() {'
-    __bsc_line '    local target="$1" bid'
-    __bsc_line '    for bid in "${em_buf_ids[@]}"; do'
-    __bsc_line '        if [[ "${em_bufs["${bid}_name"]}" == "$target" ]]; then __r=$bid; return 0; fi'
-    __bsc_line '    done'
-    __bsc_line '    __r=0; return 1'
-    __bsc_line '}'
-    __bsc_line ''
-
-    __bsc_line 'em_find_buffer_by_filename() {'
-    __bsc_line '    local target="$1" bid'
-    __bsc_line '    for bid in "${em_buf_ids[@]}"; do'
-    __bsc_line '        if [[ "${em_bufs["${bid}_filename"]}" == "$target" ]]; then __r=$bid; return 0; fi'
-    __bsc_line '    done'
-    __bsc_line '    __r=0; return 1'
-    __bsc_line '}'
-    __bsc_line ''
-
-    __bsc_line 'em_save_buffer_state() {'
-    __bsc_line '    local -i bid=$em_cur_buf_id'
-    __bsc_line '    em_bufs["${bid}_name"]="$em_bufname"'
-    __bsc_line '    em_bufs["${bid}_filename"]="$em_filename"'
-    __bsc_line '    em_bufs["${bid}_nlines"]=$em_nlines'
-    __bsc_line '    em_bufs["${bid}_cy"]=$em_cy; em_bufs["${bid}_cx"]=$em_cx'
-    __bsc_line '    em_bufs["${bid}_top"]=$em_scroll_top; em_bufs["${bid}_left"]=$em_left'
-    __bsc_line '    em_bufs["${bid}_modified"]=$em_modified'
-    __bsc_line '    em_bufs["${bid}_goal_col"]=$em_goal_col'
-    __bsc_line '    em_bufs["${bid}_mark_y"]=$em_mark_y; em_bufs["${bid}_mark_x"]=$em_mark_x'
-    __bsc_line '    local -i __i old_n=${em_bufs["${bid}_old_nlines"]:-0}'
-    __bsc_line '    for (( __i=em_nlines; __i<old_n; __i++ )); do'
-    __bsc_line '        unset "em_bufs[${bid}_line_${__i}]" 2>/dev/null'
-    __bsc_line '    done'
-    __bsc_line '    em_bufs["${bid}_old_nlines"]=$em_nlines'
-    __bsc_line '    for (( __i=0; __i<em_nlines; __i++ )); do'
-    __bsc_line '        em_bufs["${bid}_line_${__i}"]="${em_lines[__i]}"'
-    __bsc_line '    done'
-    __bsc_line '    local GS=$'"'"'\x1d'"'"''
-    __bsc_line '    local __us="" __rec; for __rec in "${em_undo_stack[@]}"; do'
-    __bsc_line '        [[ -n "$__us" ]] && __us+="$GS"; __us+="$__rec"'
-    __bsc_line '    done'
-    __bsc_line '    em_bufs["${bid}_undo"]="$__us"'
-    __bsc_line '    local __ks="" __kr; for __kr in "${em_kill_ring[@]}"; do'
-    __bsc_line '        [[ -n "$__ks" ]] && __ks+="$GS"; __ks+="$__kr"'
-    __bsc_line '    done'
-    __bsc_line '    em_bufs["${bid}_kill"]="$__ks"'
-    __bsc_line '}'
-    __bsc_line ''
-
-    __bsc_line 'em_restore_buffer_state() {'
-    __bsc_line '    local -i bid=$1'
-    __bsc_line '    em_cur_buf_id=$bid'
-    __bsc_line '    em_bufname="${em_bufs["${bid}_name"]}"'
-    __bsc_line '    em_filename="${em_bufs["${bid}_filename"]}"'
-    __bsc_line '    em_nlines=${em_bufs["${bid}_nlines"]:-1}'
-    __bsc_line '    em_cy=${em_bufs["${bid}_cy"]:-0}; em_cx=${em_bufs["${bid}_cx"]:-0}'
-    __bsc_line '    em_scroll_top=${em_bufs["${bid}_top"]:-0}; em_left=${em_bufs["${bid}_left"]:-0}'
-    __bsc_line '    em_modified=${em_bufs["${bid}_modified"]:-0}'
-    __bsc_line '    em_goal_col=${em_bufs["${bid}_goal_col"]:-"-1"}'
-    __bsc_line '    em_mark_y=${em_bufs["${bid}_mark_y"]:-"-1"}; em_mark_x=${em_bufs["${bid}_mark_x"]:-"-1"}'
-    __bsc_line '    em_lines=()'
-    __bsc_line '    local -i __i __nl=$em_nlines'
-    __bsc_line '    for (( __i=0; __i<__nl; __i++ )); do'
-    __bsc_line '        em_lines+=("${em_bufs["${bid}_line_${__i}"]}")'
-    __bsc_line '    done'
-    __bsc_line '    [[ ${#em_lines[@]} -eq 0 ]] && em_lines=("")'
-    __bsc_line '    local GS=$'"'"'\x1d'"'"''
-    __bsc_line '    em_undo_stack=()'
-    __bsc_line '    local __us="${em_bufs["${bid}_undo"]}"'
-    __bsc_line '    if [[ -n "$__us" ]]; then'
-    __bsc_line '        while [[ "$__us" == *"$GS"* ]]; do'
-    __bsc_line '            em_undo_stack+=("${__us%%"$GS"*}"); __us="${__us#*"$GS"}"'
-    __bsc_line '        done'
-    __bsc_line '        em_undo_stack+=("$__us")'
-    __bsc_line '    fi'
-    __bsc_line '    em_kill_ring=()'
-    __bsc_line '    local __ks="${em_bufs["${bid}_kill"]}"'
-    __bsc_line '    if [[ -n "$__ks" ]]; then'
-    __bsc_line '        while [[ "$__ks" == *"$GS"* ]]; do'
-    __bsc_line '            em_kill_ring+=("${__ks%%"$GS"*}"); __ks="${__ks#*"$GS"}"'
-    __bsc_line '        done'
-    __bsc_line '        em_kill_ring+=("$__ks")'
-    __bsc_line '    fi'
-    __bsc_line '}'
-    __bsc_line ''
-
-    __bsc_line 'em_new_buffer() {'
-    __bsc_line '    local name="$1" filename="$2"'
-    __bsc_line '    (( em_buf_id_counter++ )) || true'
-    __bsc_line '    em_make_buffer $em_buf_id_counter "$name" "$filename"'
-    __bsc_line '    em_buf_ids+=($em_buf_id_counter)'
-    __bsc_line '    em_cur_buf_id=$em_buf_id_counter'
-    __bsc_line '    em_bufname="$name"; em_filename="$filename"'
-    __bsc_line '    em_lines=(""); em_nlines=1'
-    __bsc_line '    em_cy=0; em_cx=0; em_scroll_top=0; em_left=0'
-    __bsc_line '    em_modified=0; em_goal_col=-1'
-    __bsc_line '    em_mark_y=-1; em_mark_x=-1'
-    __bsc_line '    em_undo_stack=(); em_kill_ring=()'
-    __bsc_line '    __r=$em_buf_id_counter'
-    __bsc_line '}'
-    __bsc_line ''
-
-    __bsc_line 'em_buf_update_name() {'
-    __bsc_line '    local name="$1" filename="$2"'
-    __bsc_line '    em_bufs["${em_cur_buf_id}_name"]="$name"'
-    __bsc_line '    em_bufs["${em_cur_buf_id}_filename"]="$filename"'
-    __bsc_line '}'
-    __bsc_line ''
-
-    __bsc_line 'em_do_switch_buffer() {'
-    __bsc_line '    local target="$1"'
-    __bsc_line '    [[ -z "$target" ]] && target="$em_bufname"'
-    __bsc_line '    if em_find_buffer_by_name "$target"; then'
-    __bsc_line '        local -i __bid=$__r'
-    __bsc_line '        em_save_buffer_state'
-    __bsc_line '        em_restore_buffer_state $__bid'
-    __bsc_line '        em_message="$em_bufname"'
-    __bsc_line '    else'
-    __bsc_line '        em_message="No buffer named '"'"'${target}'"'"'"'
-    __bsc_line '    fi'
-    __bsc_line '}'
-    __bsc_line ''
-
-    __bsc_line 'em_do_kill_buffer() {'
-    __bsc_line '    local target="$1"'
-    __bsc_line '    [[ -z "$target" ]] && target="$em_bufname"'
-    __bsc_line '    if (( ${#em_buf_ids[@]} <= 1 )); then'
-    __bsc_line '        em_message="Cannot kill the only buffer"; return'
-    __bsc_line '    fi'
-    __bsc_line '    if ! em_find_buffer_by_name "$target"; then'
-    __bsc_line '        em_message="No buffer named '"'"'${target}'"'"'"; return'
-    __bsc_line '    fi'
-    __bsc_line '    local -i __bid=$__r __is_cur=0'
-    __bsc_line '    (( __bid == em_cur_buf_id )) && __is_cur=1'
-    __bsc_line '    local -a __new_ids=()'
-    __bsc_line '    local __b; for __b in "${em_buf_ids[@]}"; do'
-    __bsc_line '        (( __b != __bid )) && __new_ids+=($__b)'
-    __bsc_line '    done'
-    __bsc_line '    em_buf_ids=("${__new_ids[@]}")'
-    __bsc_line '    if (( __is_cur )); then'
-    __bsc_line '        em_restore_buffer_state ${em_buf_ids[0]}'
-    __bsc_line '    fi'
-    __bsc_line '    em_message="Killed buffer '"'"'${target}'"'"'"'
-    __bsc_line '}'
-    __bsc_line ''
-
-    __bsc_line 'em_list_buffers() {'
-    __bsc_line '    em_save_buffer_state'
-    __bsc_line '    local -a __bl=(" MR  Buffer               Size    File"'
-    __bsc_line '                   " --  --------------------  ----    ----")'
-    __bsc_line '    local __b; for __b in "${em_buf_ids[@]}"; do'
-    __bsc_line '        local __bn="${em_bufs["${__b}_name"]}" __bf="${em_bufs["${__b}_filename"]}"'
-    __bsc_line '        local __bm=${em_bufs["${__b}_modified"]:-0} __bnl=${em_bufs["${__b}_nlines"]:-1}'
-    __bsc_line '        local __cur=" " __mod=" "'
-    __bsc_line '        (( __b == em_cur_buf_id )) && __cur="."'
-    __bsc_line '        (( __bm == 1 )) && __mod="*"'
-    __bsc_line '        string_repeat " " $(( 20 - ${#__bn} ))'
-    __bsc_line '        local __pad="$__r"'
-    __bsc_line '        __bl+=(" ${__cur}${__mod}  ${__bn}${__pad}  ${__bnl}    ${__bf}")'
-    __bsc_line '    done'
-    __bsc_line '    __bl+=("" "[Press C-g or q to return]")'
-    __bsc_line '    local -a __save_lines=("${em_lines[@]}")'
-    __bsc_line '    local -i __save_nlines=$em_nlines __save_cy=$em_cy __save_cx=$em_cx __save_top=$em_scroll_top'
-    __bsc_line '    local __save_mod=$em_modified __save_name="$em_bufname" __save_file="$em_filename"'
-    __bsc_line '    em_lines=("${__bl[@]}"); em_nlines=${#__bl[@]}'
-    __bsc_line '    em_cy=0; em_cx=0; em_scroll_top=0'
-    __bsc_line '    em_bufname="*Buffer List*"; em_filename=""; em_modified=0; em_message=""'
-    __bsc_line '    while true; do'
-    __bsc_line '        em_render'
-    __bsc_line '        em_read_key'
-    __bsc_line '        local __k="$__r"'
-    __bsc_line '        case "$__k" in'
-    __bsc_line '            C-g|SELF:q) break ;;'
-    __bsc_line '            C-n|DOWN) em_next_line ;;'
-    __bsc_line '            C-p|UP) em_previous_line ;;'
-    __bsc_line '            C-v|PGDN) em_scroll_down ;;'
-    __bsc_line '            M-v|PGUP) em_scroll_up ;;'
-    __bsc_line '        esac'
-    __bsc_line '    done'
-    __bsc_line '    em_restore_buffer_state $em_cur_buf_id'
-    __bsc_line '    em_message=""'
-    __bsc_line '}'
-    __bsc_line ''
-
-    __bsc_line 'em_complete_buffer() {'
-    __bsc_line '    local input="$1" __b'
-    __bsc_line '    __r=()'
-    __bsc_line '    for __b in "${em_buf_ids[@]}"; do'
-    __bsc_line '        local __bn="${em_bufs["${__b}_name"]}"'
-    __bsc_line '        if [[ -z "$input" || "$__bn" == "$input"* ]]; then'
-    __bsc_line '            __r+=("$__bn")'
-    __bsc_line '        fi'
-    __bsc_line '    done'
-    __bsc_line '}'
-    __bsc_line ''
-
-    __bsc_line 'em_do_quit() {'
-    __bsc_line '    em_save_buffer_state'
-    __bsc_line '    local -i __unsaved=0 __b'
-    __bsc_line '    for __b in "${em_buf_ids[@]}"; do'
-    __bsc_line '        if (( ${em_bufs["${__b}_modified"]:-0} == 1 )) && [[ "${em_bufs["${__b}_name"]}" != "*scratch*" ]]; then'
-    __bsc_line '            (( __unsaved++ )) || true'
-    __bsc_line '        fi'
-    __bsc_line '    done'
-    __bsc_line '    if (( __unsaved > 0 )); then'
-    __bsc_line '        em_minibuffer_start "${__unsaved} modified buffer(s) not saved; exit anyway? (yes or no) " "quit-confirm"'
-    __bsc_line '    else'
-    __bsc_line '        em_running=0'
-    __bsc_line '    fi'
-    __bsc_line '}'
-    __bsc_line ''
+    # Optional application runtime. Replaced Scheme functions are named by
+    # the caller, keeping application-specific representations out of sheme.
+    if [[ -n "$_runtime_file" ]]; then
+        local _runtime_line
+        while IFS= read -r _runtime_line || [[ -n "$_runtime_line" ]]; do
+            __bsc_line "$_runtime_line"
+        done < "$_runtime_file"
+        __bsc_line ""
+    fi
 
     # Parse and compile all top-level forms
-    __bs_tokenize "$_src"
+    __bs_last_error=""
+    local _compile_status=0
+    if ! __bs_tokenize "$_src"; then
+        _compile_status=1
+    fi
     __bs_tpos=0
-    while (( __bs_tpos < ${#__bs_tokens[@]} )); do
-        __bs_parse_expr || break
+    while (( _compile_status == 0 && __bs_tpos < ${#__bs_tokens[@]} )); do
+        if ! __bs_parse_expr; then
+            _compile_status=1
+            break
+        fi
         local parsed="$__bs_ret"
         __bsc_emit_expr "$parsed" "stmt"
         # If there's a leftover expression result, emit it
         [[ -n "$__bsc_ret" && "$__bsc_ret" != "" ]] && __bsc_line "$__bsc_ret"
     done
 
-    # Output the result
-    printf '%s' "$__bsc_out"
+    # Never publish a partial program after a parser failure.
+    (( _compile_status == 0 )) && printf '%s' "$__bsc_out"
 
     __bsc_target="bash"   # reset to default
     [[ -n "$_bs_old_opts" ]] && set -e
-    return 0
+    return "$_compile_status"
 }
 
 # ── bs-compile-zsh ────────────────────────────────────────────────────────────
 # Compile Scheme source to native zsh code.
-# Usage: bs-compile-zsh <scheme-source>
+# Usage: bs-compile-zsh [options] <scheme-source>
 # Output: zsh script on stdout (cache as *.zsh.cache; source to get functions)
 # ──────────────────────────────────────────────────────────────────────────────
 bs-compile-zsh() {
