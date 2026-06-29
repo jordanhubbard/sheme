@@ -31,7 +31,9 @@ assert() {
 
 # ── State-file lifecycle ─────────────────────────────────────────────────────
 _state_file="$__BS_STATE_FILE"
-_state_mode=$(stat -f '%Lp' "$_state_file" 2>/dev/null || stat -c '%a' "$_state_file")
+# Try GNU stat first: its unrelated `-f` option succeeds with a filesystem
+# report, so probing the BSD form first produces a false result on Linux.
+_state_mode=$(stat -c '%a' "$_state_file" 2>/dev/null || stat -f '%Lp' "$_state_file")
 assert "state file is owner-only" "$_state_mode" "600"
 bs-reset
 assert "bs-reset retains private state path" "$__BS_STATE_FILE" "$_state_file"
