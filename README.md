@@ -219,7 +219,8 @@ optimization, so deep recursion is limited by the host shell.
 
 ### The continuing adventures of Jordan Hubbard and Sir Reginald von Fluffington III
 
-> *Part 2 of an ongoing chronicle.  [← Part 1: shemacs](https://github.com/jordanhubbard/shemacs#the-totally-true-and-not-at-all-embellished-history-of-shemacs) | [Part 3: NanoLang →](https://github.com/jordanhubbard/nanolang#the-totally-true-and-not-at-all-embellished-history-of-nanolang)*
+> *Part 9 of an ongoing chronicle. [← Part 8: shemacs](https://github.com/jordanhubbard/shemacs#the-totally-true-and-not-at-all-embellished-history-of-shemacs) | [Part 10: WebMux →](https://github.com/jordanhubbard/webmux#the-totally-true-and-not-at-all-embellished-history-of-webmux)*
+> *[Chronicle index](https://github.com/jordanhubbard/ai-template/blob/main/CHRONICLE.md) · Ordered by first recorded AI-assisted commit.*
 > *Sir Reginald von Fluffington III appears throughout.  He does not endorse any of it.*
 
 It was a dark and stormy night in late 2024.  A lone programmer, hunched over a mass of tangled bash functions that had somehow metastasized into a text editor, stared at his screen and whispered the words that would change history: "What if I wrote a Scheme interpreter... *in bash*?"  (The result would later be renamed from `bad-scheme.sh` to `bs.sh`, because brevity is the soul of wit, and also of `source` commands.)
@@ -272,7 +273,7 @@ withhold his endorsement, citing "procedural concerns" and "insufficient tuna."
 
 The project motto remains: **"It's not about whether you *should*.  It's about whether you *can*.  And also whether your cat respects you.  (He doesn't.)"**
 
-The programmer did not stop at Scheme.  What he did next — and why he felt the need to design an entirely new programming language from first principles, prove it correct in Coq, and build it a virtual machine with 178 opcodes — is documented in the [NanoLang repository](https://github.com/jordanhubbard/nanolang#the-totally-true-and-not-at-all-embellished-history-of-nanolang).  Sir Reginald continues to withhold comment.
+Another of the programmer’s adventures — and why he felt the need to design an entirely new programming language from first principles, prove it correct in Coq, and build it a virtual machine with 178 opcodes — is documented in the [NanoLang repository](https://github.com/jordanhubbard/nanolang#the-totally-true-and-not-at-all-embellished-history-of-nanolang).  Sir Reginald continues to withhold comment.
 
 ## Suggested Projects
 
